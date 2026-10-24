@@ -1,0 +1,1803 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RESONA 무대 3D</title>
+<!--
+  RESONA 무대 시뮬레이터 v0.4 (2026-10-23) — 극아타 콘서트 무대 3D
+  - 중앙 + 좌우 스크린 (전부 좌우대칭 — 콘서트)
+  - 무대 안 골목 세트 흰 라인 (셔터 가게·비계 데크·계단·오렌지 방·TV) + 영어 네온 간판 — 좌우 모양 다르게
+  - 전봇대 두 개만 일부러 비대칭 (모양·높이·위치 다름) + 무대를 가로지르는 전선
+  - 콘서트 조명: 트러스 무빙 빔 · 바닥 업라이트 · 전구 포털 프레임 · 객석 응원봉
+  - 마우스: 드래그 = 회전 · 휠 = 줌 · 오른쪽 드래그 = 이동
+  - resona.html → relay.py(ws://localhost:9980) → 이 화면 / 연결 없으면 DEMO
+  - 영상: 화면에 끌어놓기 · 「영상 불러오기」 · ?video=<경로>
+  - three.js 0.160 · 네온 폰트 = lib/ 폴더 안 파일 → 인터넷 없이 열림 (시작.command 로 켜야 함 — 파일 더블클릭 직접 열기는 크롬이 막음)
+  - 이전: stage_3d_v0.3.html (동네 라인 세트) · stage_sim.html (2D)
+-->
+<style>
+  :root{
+    --bg:#000; --panel:#0b1220; --panel2:#111a2c; --line:#1d2a44;
+    --bar:#2f6fb5; --text:#dfe6f2; --dim:#7d8aa3; --ok:#3ddc84; --warn:#f2b33d;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Pretendard","Apple SD Gothic Neo",sans-serif;overflow:hidden}
+  #app{display:grid;grid-template-columns:230px 1fr;height:100%}
+  #app.nopanel{grid-template-columns:1fr}
+  #app.nopanel aside{display:none}
+  aside{background:var(--panel);border-right:1px solid var(--line);padding:18px 14px;overflow-y:auto;
+    display:flex;flex-direction:column;gap:10px}
+  .cue-title{font-weight:800;font-size:15px;letter-spacing:.04em}
+  .cue-title b{color:var(--dim);margin-right:6px}
+  .sub{font-size:9px;letter-spacing:.14em;color:var(--dim);text-transform:uppercase}
+  .driver{background:var(--panel2);border:1px solid var(--line);border-radius:3px;padding:8px 12px;
+    font-family:ui-monospace,Menlo,monospace;font-size:14px;display:flex;justify-content:space-between}
+  .bar{display:grid;grid-template-columns:44px 1fr 34px;align-items:center;gap:6px;font-size:10px;color:var(--dim)}
+  .bar .track{height:12px;background:var(--panel2);position:relative}
+  .bar .fill{position:absolute;left:0;top:0;bottom:0;background:var(--bar)}
+  .bar .peak{position:absolute;top:0;bottom:0;width:2px;background:#fff}
+  .bar.drv{color:var(--text)}
+  .bar.drv .fill{background:#4f95e0}
+  .bar .num{font-family:ui-monospace,Menlo,monospace;text-align:right}
+  #cuelist{display:flex;flex-direction:column;gap:3px}
+  .cue{display:flex;justify-content:space-between;padding:6px 8px;border:1px solid var(--line);border-radius:3px;
+    font-size:12px;cursor:pointer;background:transparent;color:var(--dim);text-align:left}
+  .cue:hover{color:var(--text)}
+  .cue.on{background:#1b3a66;color:#fff;border-color:#2f6fb5}
+  .cue small{font-family:ui-monospace,Menlo,monospace;opacity:.7}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:4px}
+  .btn{padding:7px 8px;border:1px solid var(--line);border-radius:3px;background:transparent;color:var(--dim);font-size:12px;cursor:pointer}
+  .btn:hover{color:var(--text)}
+  .btn.on{background:#13284a;color:#fff;border-color:#2f6fb5}
+  aside .name{font-size:10px;color:var(--dim);word-break:break-all;line-height:1.5}
+  .vid .name{font-size:10px;color:var(--dim);word-break:break-all;margin-top:4px}
+  .status{font-size:11px;line-height:1.7;color:var(--dim);border-top:1px solid var(--line);padding-top:10px;margin-top:auto}
+  .status .led{display:inline-block;width:8px;height:8px;border-radius:50%;background:#444;margin-right:6px;vertical-align:middle}
+  .status .led.ok{background:var(--ok)} .status .led.warn{background:var(--warn)}
+  .keys{font-size:10px;color:var(--dim);line-height:1.6}
+  .keys kbd{font-family:ui-monospace,Menlo,monospace;background:var(--panel2);border:1px solid var(--line);
+    border-radius:2px;padding:0 4px;color:var(--text)}
+  main{position:relative;min-width:0}
+  #gl{position:absolute;inset:0;width:100%;height:100%;display:block}
+  .edge{display:grid;grid-template-columns:auto 1fr auto;gap:6px;align-items:center;font-size:10px;color:var(--dim)}
+  .edge input{width:100%;accent-color:#4f95e0}
+  .edgeLabel{font-size:10px;color:var(--dim);text-align:center;margin-top:-4px}
+  .wheelrow{display:flex;gap:10px;align-items:center}
+  .wheel{width:120px;height:120px;cursor:crosshair;border-radius:50%;touch-action:none}
+  .wheelside{display:flex;flex-direction:column;gap:6px;flex:1}
+  .outs{display:flex;flex-direction:column;gap:4px}
+  .outrow{display:grid;grid-template-columns:58px 1fr 10px;gap:6px;align-items:center;font-size:11px;color:var(--text)}
+  .outrow select{width:100%;padding:4px;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:3px;font-size:11px}
+  .outrow small{color:var(--dim);font-family:ui-monospace,Menlo,monospace;font-size:9px}
+  .knobs{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:4px}
+  .knob{display:flex;flex-direction:column;align-items:center;gap:3px;font-size:10px;color:var(--dim);user-select:none}
+  .knob .dial{width:44px;height:44px;border-radius:50%;background:radial-gradient(circle at 50% 40%,#22304a,#0d1424);border:1px solid var(--line);position:relative;cursor:ns-resize;touch-action:none}
+  .knob .dial::after{content:'';position:absolute;left:50%;top:5px;width:3px;height:13px;margin-left:-1.5px;border-radius:2px;background:#4f95e0;transform-origin:50% 17px;transform:rotate(var(--rot,0deg))}
+  .knob .dial.dim{opacity:.4}
+  .knob b{font-family:ui-monospace,Menlo,monospace;font-weight:400;color:var(--text)}
+  .outrow i{width:8px;height:8px;border-radius:50%;background:#444}
+  .outrow i.on{background:var(--ok)}
+  .btn.out{border-color:#2f6fb5;color:var(--text)}
+  .devsel{width:100%;margin-top:4px;padding:5px;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:3px;font-size:11px}
+  .wheel.small{width:92px;height:92px}
+  .dim{display:grid;grid-template-columns:auto 1fr 26px;gap:4px;align-items:center;font-size:10px;color:var(--dim)}
+  .dim input{width:100%;accent-color:#4f95e0}
+  .dim b{font-weight:400;text-align:right;font-family:ui-monospace,Menlo,monospace}
+  .swatch{height:22px;border-radius:3px;border:1px solid var(--line)}
+  #drop{position:absolute;inset:12px;border:2px dashed #4f95e0;border-radius:8px;display:none;
+    align-items:center;justify-content:center;font-size:18px;color:#cfe0ff;background:rgba(10,20,40,.6);pointer-events:none}
+  #drop.show{display:flex}
+  #err{position:absolute;left:16px;bottom:16px;right:16px;color:#ffb4b4;font-size:13px;display:none}
+</style>
+<link href="lib/fonts/fonts.css" rel="stylesheet">   <!-- 네온 폰트 8종 — 폴더 안 파일 (인터넷 없이도) -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "./lib/three/build/three.module.js",
+    "three/addons/": "./lib/three/addons/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="app">
+  <aside>
+    <div class="cue-title" id="cueTitle"><b>1</b>GLITCH A</div>
+    <div class="sub">Audio input gain</div>
+    <div class="driver"><span id="drvName">drums</span><span id="drvVal">0.00</span></div>
+    <div id="bars"></div>
+    <div class="sub" style="margin-top:6px">Cue</div>
+    <div id="cuelist"></div>
+    <div class="sub" style="margin-top:6px">시점</div>
+    <div class="row">
+      <button class="btn" data-view="front">정면</button>
+      <button class="btn" data-view="house">객석</button>
+      <button class="btn" data-view="side">사선</button>
+      <button class="btn" data-view="top">위에서</button>
+    </div>
+    <button class="btn" id="btnOrbit">자동 회전</button>
+    <button class="btn out" id="btnOutput">무대 화면 출력창 (프로젝터)</button>
+    <button class="btn" id="btnSelfOut">이 창을 출력 화면으로 (패널 숨김 + 전체화면)</button>
+    <div class="name" id="outWinNote">패널 없이 무대만 나오는 창 — 프로젝터로 끌어다 놓고 더블클릭하면 전체화면</div>
+    <div class="sub" style="margin-top:6px">카메라 무빙</div>
+    <div class="row">
+      <button class="btn" data-shot="drone">드론</button>
+      <button class="btn" data-shot="crane">크레인</button>
+      <button class="btn" data-shot="dolly">런웨이 달리</button>
+      <button class="btn" data-shot="pov">객석 시점</button>
+      <button class="btn" data-shot="close">보컬 클로즈업</button>
+      <button class="btn" data-shot="back">무대 뒤</button>
+    </div>
+    <button class="btn" id="btnDirector">🎬 카메라 연출 (자동 컷)</button>
+    <div class="sub" style="margin-top:6px">조명 켜기·끄기</div>
+    <div class="row">
+      <button class="btn on" id="tgCity">전식 (네온·전구·신호등)</button>
+      <button class="btn on" id="tgMovers">무빙 빔</button>
+      <button class="btn on" id="tgBulbs">전구 프레임</button>
+      <button class="btn on" id="tgCrowd">응원봉</button>
+      <button class="btn on" id="tgScreens">스크린</button>
+      <button class="btn on" id="tgBloom">빛 번짐</button>
+      <button class="btn on" id="tgBeat">박자 번쩍임</button>
+    </div>
+    <div class="edge">
+      <span>하드</span><input type="range" id="edgeSlider" min="0" max="100" value="55"><span>소프트</span>
+    </div>
+    <div class="edgeLabel" id="edgeLabel">빔 엣지 55 — 중간</div>
+    <div class="sub" style="margin-top:6px">무빙 패턴</div>
+    <div class="row" id="patternRow" style="grid-template-columns:1fr 1fr 1fr"></div>
+    <button class="btn" id="btnPatternAuto">패턴 자동 (16박마다)</button>
+    <div class="sub" style="margin-top:6px">셔터·커튼</div>
+    <div class="row">
+      <button class="btn on" id="tgPoster">포스터</button>
+      <button class="btn on" id="tgEQ">이퀄라이저</button>
+    </div>
+    <div class="row" style="grid-template-columns:1fr 1fr 1fr">
+      <button class="btn on" data-surf="split">나누기</button>
+      <button class="btn" data-surf="overlay">겹치기</button>
+      <button class="btn" data-surf="cue">큐 따라</button>
+    </div>
+    <div class="row">
+      <button class="btn" id="imgShutter">왼쪽 셔터 이미지</button>
+      <button class="btn" id="imgCurtain">오른쪽 커튼 이미지</button>
+    </div>
+    <button class="btn" id="imgReset">기본 포스터로</button>
+    <div class="name" id="imgNote">셔터 1400×1190 · 커튼 1520×1170 px 권장 · 중요한 건 아래 절반 · 투명 PNG 좋음 · 화면 왼쪽/오른쪽 절반에 끌어놓아도 됨</div>
+    <input type="file" id="imgFile" accept="image/*" hidden>
+    <div class="sub" style="margin-top:6px">앞 트러스 무빙</div>
+    <div class="wheelrow">
+      <canvas id="wheel_front" class="wheel small" width="200" height="200"></canvas>
+      <div class="wheelside">
+        <div id="swatch_front" class="swatch"></div>
+        <button class="btn on" id="auto_front">곡 색 따라</button>
+        <div class="dim"><span>조도</span><input type="range" id="dim_front" min="0" max="100" value="100"><b id="dimv_front">100</b></div>
+      </div>
+    </div>
+    <div class="sub" style="margin-top:6px">뒤 트러스 무빙</div>
+    <div class="wheelrow">
+      <canvas id="wheel_back" class="wheel small" width="200" height="200"></canvas>
+      <div class="wheelside">
+        <div id="swatch_back" class="swatch"></div>
+        <button class="btn on" id="auto_back">곡 색 따라</button>
+        <div class="dim"><span>조도</span><input type="range" id="dim_back" min="0" max="100" value="100"><b id="dimv_back">100</b></div>
+      </div>
+    </div>
+    <div class="sub" style="margin-top:6px">바닥 업라이트</div>
+    <div class="wheelrow">
+      <canvas id="wheel_floor" class="wheel small" width="200" height="200"></canvas>
+      <div class="wheelside">
+        <div id="swatch_floor" class="swatch"></div>
+        <button class="btn on" id="auto_floor">곡 색 따라</button>
+        <div class="dim"><span>조도</span><input type="range" id="dim_floor" min="0" max="100" value="100"><b id="dimv_floor">100</b></div>
+      </div>
+    </div>
+    <div class="sub" style="margin-top:6px">응원봉 색</div>
+    <div class="wheelrow">
+      <canvas id="wheel" class="wheel" width="240" height="240"></canvas>
+      <div class="wheelside">
+        <div id="crowdSwatch" class="swatch"></div>
+        <button class="btn on" id="btnCrowdAuto">곡 색 따라</button>
+        <button class="btn" id="btnCrowdShow">오토 (응원봉 연출)</button>
+      </div>
+    </div>
+    <div class="sub" style="margin-top:6px">LED 소스</div>
+    <div class="vid">
+      <div class="row">
+        <button class="btn on" id="btnLoad">영상 불러오기</button>
+        <button class="btn" id="btnSrc">지금: 그림</button>
+        <button class="btn" id="btnCapture">레조나 화면 받기</button>
+        <button class="btn" id="btnDevice">캡처 장치</button>
+      </div>
+      <select id="deviceSel" class="devsel" hidden></select>
+      <div class="name" id="vidName">영상 없음 — 화면에 끌어놓아도 됨</div>
+      <input type="file" id="file" accept="video/*" hidden>
+    </div>
+    <div class="sub" style="margin-top:6px">레조나 출력 → 스크린</div>
+    <div class="outs" id="outRows"></div>
+    <div class="knobs" id="knobRow"></div>
+    <input type="file" id="panelFile" accept="video/*" hidden>
+    <div class="name" id="outNote">줄 아래 숫자 = 레조나 출력 권장 해상도(px). 들어오면 실제 해상도·비율을 여기 표시</div>
+    <div class="status" id="status"></div>
+    <div class="keys">
+      <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> 곡 · <kbd>A</kbd><kbd>B</kbd> 버전 · <kbd>Space</kbd> A↔B<br>
+      <kbd>0</kbd> 정면 <kbd>9</kbd> 객석 <kbd>8</kbd> 사선 <kbd>7</kbd> 위 · <kbd>O</kbd> 자동 회전<br>
+      <kbd>C</kbd> 카메라 연출 (끌면 멈춤)<br>
+      <kbd>L</kbd> 전식 켜기·끄기 · <kbd>P</kbd> 무대 화면 출력창<br>
+      드래그 회전 · 휠 줌 · 오른쪽 드래그 이동<br>
+      <kbd>V</kbd> 영상↔그림 · <kbd>T</kbd> 큐 자동 · <kbd>D</kbd> 데모<br>
+      <kbd>F</kbd> 전체화면 · <kbd>H</kbd> 패널 숨김
+    </div>
+  </aside>
+  <main id="main">
+    <canvas id="gl"></canvas>
+    <div id="drop">영상을 놓으면 LED에 띄웁니다</div>
+    <div id="err"></div>
+  </main>
+</div>
+<video id="vid" muted loop playsinline crossorigin="anonymous" style="display:none"></video>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+/* ───────── 무대 배치 ─────────
+   x·y = 정면 입면 좌표 (가로 1000 · 무대 바닥 y=505 · 가운데 x=500, 좌우대칭)
+   z   = 깊이 (0 = 무대 앞선, − = 안쪽, + = 객석 쪽)
+   미니어처 모형의 치수도 여기 한 곳에서 맞춘다. */
+const GROUND = 505;
+const MID = 500;
+const SCREENS = {
+  center: {x:330, y:135, w:340, h:225, z:-70, ry:0},     // 중앙 스크린
+  left:   {x:70,  y:165, w:215, h:165, z:-40, ry:.22},   // 좌 스크린 (안쪽으로 살짝 꺾임)
+  right:  {x:715, y:165, w:215, h:165, z:-40, ry:-.22},  // 우 스크린
+  strip:  {x:150, y:488, w:700, h:14,  z:42,  ry:0},     // 무대 앞면 LED 띠
+};
+const CENTER = {x:SCREENS.center.x+SCREENS.center.w/2, y:SCREENS.center.y+SCREENS.center.h/2};
+const mirror = x => 2*MID - x;
+
+/* ───────── 큐 ───────── */
+const SONGS = [
+  {name:'GLITCH', look:'glitch', driver:{A:'drums', B:'bass'}},
+  {name:'SKY',    look:'sky',    driver:{A:'other', B:'vocal'}},
+  {name:'CITY',   look:'city',   driver:{A:'drums', B:'bass'}},
+];
+const MIDI_BASE_NOTE = 36;
+
+/* ───────── 유틸 ───────── */
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+function hash(a,b=0,c=0){ const x=Math.sin(a*127.1+b*311.7+c*74.7)*43758.5453; return x-Math.floor(x); }
+function noise2(x,y){
+  const xi=Math.floor(x), yi=Math.floor(y), xf=x-xi, yf=y-yi;
+  const u=xf*xf*(3-2*xf), v=yf*yf*(3-2*yf);
+  const a=hash(xi,yi), b=hash(xi+1,yi), c=hash(xi,yi+1), d=hash(xi+1,yi+1);
+  const top=a+(b-a)*u, bot=c+(d-c)*u;
+  return top+(bot-top)*v;
+}
+function bbox(rects){
+  let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
+  rects.forEach(r=>{x0=Math.min(x0,r.x);y0=Math.min(y0,r.y);x1=Math.max(x1,r.x+r.w);y1=Math.max(y1,r.y+r.h);});
+  return {x:x0,y:y0,w:x1-x0,h:y1-y0};
+}
+const X = px => px - MID;            // 입면 x → 월드 x
+const Y = py => GROUND - py;         // 입면 y → 월드 y (바닥 = 0)
+
+/* ───────── 신호 ───────── */
+const KEYS = ['rms','drums','bass','vocal','other','low','hi'];
+const sig = {rms:0,drums:0,bass:0,vocal:0,other:0,low:0,hi:0,onset:0,beatPulse:0,beatCount:0,bpm:0,beatInBar:1};
+const target = {rms:0,drums:0,bass:0,vocal:0,other:0,low:0,hi:0};
+const peakHold = {};
+KEYS.forEach(k=>peakHold[k]=0);
+let lastBeatVal = null, lastLiveAt = -1e9, forceDemo = false;
+
+function ingest(d){
+  const n = k => (typeof d[k]==='number' ? d[k] : 0);
+  target.drums = n('stem_drums');
+  target.bass  = n('stem_bass');
+  target.vocal = n('stem_vocal');
+  target.other = n('stem_other');
+  target.rms   = n('rms');
+  target.low   = Math.max(n('band_sub'), n('band_low'));
+  target.hi    = Math.max(n('band_hi'), n('band_air'));
+  sig.onset    = Math.max(sig.onset, n('onset'));
+  sig.bpm      = n('bpm');
+  sig.beatInBar= n('beat_in_bar') || 1;
+  if(typeof d.beat==='number'){
+    if(lastBeatVal!==null && d.beat!==lastBeatVal){ sig.beatPulse=1; sig.beatCount++; }
+    lastBeatVal = d.beat;
+  }
+  lastLiveAt = performance.now();
+}
+function parseOscText(txt){
+  const d = {};
+  txt.split('\n').forEach(line=>{
+    const sp = line.indexOf(' '); if(sp<0) return;
+    const key = line.slice(0,sp).replace('/resona/','').replace(/\//g,'_');
+    const v = parseFloat(line.slice(sp+1));
+    d[key] = isNaN(v) ? line.slice(sp+1) : v;
+  });
+  return d;
+}
+let demoLastBeat = -1;
+function demoSignal(t){
+  const bpm = 118, ph = t*bpm/60, beat = Math.floor(ph), fr = ph-beat, bib = beat%4;
+  const section = Math.floor(beat/16)%2;
+  const kick  = Math.exp(-fr*7);
+  const snare = (bib===1||bib===3) ? Math.exp(-fr*9)*.9 : 0;
+  target.drums = clamp(.55*kick + .5*snare + .05*hash(Math.floor(t*30)),0,1);
+  target.bass  = clamp((bib===0||bib===2 ? .85 : .45)*Math.exp(-fr*3) + .1, 0, 1);
+  target.vocal = clamp(section ? .55+.3*Math.sin(t*1.7)+.1*Math.sin(t*5.1) : .12+.1*Math.sin(t*.9), 0, 1);
+  target.other = clamp(.3 + .35*noise2(t*.8, 3) + (section?.15:0), 0, 1);
+  target.low   = clamp(.6*kick + .4*target.bass, 0, 1);
+  target.hi    = clamp(.4*snare + .3*noise2(t*4,9) + (section?.2:0), 0, 1);
+  target.rms   = clamp((target.drums+target.bass+target.vocal+target.other)/3.2, 0, 1);
+  if(beat!==demoLastBeat){ demoLastBeat=beat; sig.beatPulse=1; sig.beatCount++; if(bib===0||bib===2) sig.onset=1; }
+  sig.bpm = bpm; sig.beatInBar = bib+1;
+}
+function isLive(){ return !forceDemo && performance.now()-lastLiveAt < 1500; }
+function updateSignals(t, dt){
+  if(!isLive()) demoSignal(t);
+  KEYS.forEach(k=>{
+    const tv = clamp(target[k]||0, 0, 1);
+    sig[k] += (tv-sig[k]) * Math.min(1, dt*(tv>sig[k] ? 30 : 9));
+    peakHold[k] = Math.max(sig[k], peakHold[k]-dt*.35);
+  });
+  sig.beatPulse = Math.max(0, sig.beatPulse - dt*4);
+  sig.onset     = Math.max(0, sig.onset - dt*5);
+  if(!beatFx){ sig.beatPulse = 0; sig.onset = 0; }        // 「박자 번쩍임」 끄기 — 박 수(beatCount)는 계속 셈
+}
+let beatFx = true;
+
+/* ───────── WebSocket ───────── */
+const qs = new URLSearchParams(location.search);
+const WS_URL = qs.get('ws') || 'ws://localhost:9980';
+let wsState = '대기';
+function wsConnect(){
+  let ws;
+  try{ ws = new WebSocket(WS_URL); }catch(e){ wsState='주소 오류'; return; }
+  wsState = '연결 중';
+  ws.onopen  = ()=>{ wsState='연결됨'; };
+  ws.onclose = ()=>{ wsState='끊김 — 재시도'; setTimeout(wsConnect, 3000); };
+  ws.onmessage = e=>{
+    if(typeof e.data!=='string') return;
+    let d; try{ d=JSON.parse(e.data); }catch(_){ d=parseOscText(e.data); }
+    if(d && typeof d==='object') ingest(d);
+  };
+}
+wsConnect();
+
+/* ───────── 영상 ───────── */
+const vid = document.getElementById('vid');
+let useVideo = false, vidReady = false;
+let liveStream = null;
+function stopStream(){ if(liveStream){ liveStream.getTracks().forEach(t=>t.stop()); liveStream = null; } vid.srcObject = null;
+  document.getElementById('btnCapture').classList.remove('on'); document.getElementById('btnDevice').classList.remove('on'); }
+function loadVideo(src, name){
+  stopStream(); vidReady = false; vid.src = src; vid.play().catch(()=>{});
+  document.getElementById('vidName').textContent = name;
+}
+function loadStream(stream, name, btnId){                  // 레조나 화면(화면 공유)·캡처 장치 → LED 스크린 입력
+  stopStream(); liveStream = stream; vidReady = false;
+  vid.removeAttribute('src'); vid.srcObject = stream; vid.play().catch(()=>{});
+  document.getElementById('vidName').textContent = '실시간 입력 — ' + name;
+  document.getElementById(btnId).classList.add('on');
+  stream.getVideoTracks()[0].addEventListener('ended', ()=>{ stopStream(); vidReady=false; setSource(false);
+    document.getElementById('vidName').textContent = '실시간 입력이 끊겼어요 — 다시 누르세요'; });
+}
+vid.addEventListener('loadeddata', ()=>{ vidReady = true; setSource(true); });
+vid.addEventListener('error', ()=>{ document.getElementById('vidName').textContent = '영상을 못 읽음 — mp4(H.264) 권장'; });
+function setSource(v){
+  useVideo = v && vidReady;
+  const b = document.getElementById('btnSrc');
+  b.textContent = useVideo ? '지금: 영상' : '지금: 그림';
+  b.classList.toggle('on', useVideo);
+}
+document.getElementById('btnLoad').onclick = ()=>document.getElementById('file').click();
+document.getElementById('btnSrc').onclick = ()=>setSource(!useVideo);
+document.getElementById('btnCapture').onclick = async ()=>{    // 같은 컴퓨터의 레조나 출력창·탭·화면을 그대로 받음
+  if(liveStream && document.getElementById('btnCapture').classList.contains('on')){ stopStream(); setSource(false); document.getElementById('vidName').textContent='실시간 입력 끔'; return; }
+  try{ const st = await navigator.mediaDevices.getDisplayMedia({video:{frameRate:30}, audio:false});
+    loadStream(st, st.getVideoTracks()[0].label || '화면 공유', 'btnCapture'); }
+  catch(e){ document.getElementById('vidName').textContent = '화면 공유를 취소했거나 막혔어요 — 시작.command 로 연 로컬 버전에서 쓰세요'; }
+};
+document.getElementById('btnDevice').onclick = async ()=>{     // 캡처보드(레조나 컴퓨터 HDMI)·카메라
+  const sel = document.getElementById('deviceSel');
+  try{
+    const first = await navigator.mediaDevices.getUserMedia({video:true, audio:false});   // 권한을 받아야 장치 이름이 보임
+    first.getTracks().forEach(t=>t.stop());
+    const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='videoinput');
+    sel.innerHTML = devs.map(d=>`<option value="${d.deviceId}">${d.label||'비디오 장치'}</option>`).join('');
+    const cap = devs.find(d=>!/facetime|camera|카메라/i.test(d.label)) || devs[0];         // 내장 카메라가 아닌 것(캡처보드)을 먼저
+    if(cap) sel.value = cap.deviceId;
+    sel.hidden = devs.length < 2;
+    const open = async id=>{ const st = await navigator.mediaDevices.getUserMedia({video:{deviceId:{exact:id}, width:1920, height:1080}, audio:false});
+      loadStream(st, st.getVideoTracks()[0].label || '캡처 장치', 'btnDevice'); };
+    sel.onchange = ()=>open(sel.value);
+    if(cap) await open(cap.deviceId); else document.getElementById('vidName').textContent = '비디오 장치를 못 찾았어요';
+  }catch(e){ document.getElementById('vidName').textContent = '캡처 장치를 못 열었어요 — 카메라 권한을 허용했는지 확인하세요'; }
+};
+document.getElementById('file').onchange = e=>{ const f=e.target.files[0]; if(f) loadVideo(URL.createObjectURL(f), f.name); };
+const dropEl = document.getElementById('drop');
+window.addEventListener('dragover', e=>{ e.preventDefault(); dropEl.classList.add('show'); });
+window.addEventListener('dragleave', e=>{ if(!e.relatedTarget) dropEl.classList.remove('show'); });
+window.addEventListener('drop', e=>{
+  e.preventDefault(); dropEl.classList.remove('show');
+  const f = [...e.dataTransfer.files].find(f=>f.type.startsWith('video/'));
+  if(f) loadVideo(URL.createObjectURL(f), f.name);
+  const im = [...e.dataTransfer.files].find(f=>f.type.startsWith('image/'));   // 이미지 = 포스터 (화면 왼쪽 절반 → 셔터, 오른쪽 → 커튼)
+  if(im && typeof setPosterImage==='function') setPosterImage(e.clientX < innerWidth/2 ? 'shutter' : 'curtain', im);
+});
+if(qs.get('video')) loadVideo(qs.get('video'), qs.get('video').split('/').pop());
+
+/* ───────── 큐 상태 ───────── */
+let cur = {song:0, v:'A'}, prev = null, fade = 1, autoCycle = false, autoAt = 0;
+function setCue(song, v){
+  song = clamp(song,0,SONGS.length-1);
+  if(song===cur.song && v===cur.v) return;
+  prev = {...cur}; cur = {song, v}; fade = 0;
+  renderCueUI();
+}
+
+/* ───────── LED 그림 (2D 캔버스 → 3D 텍스처) ─────────
+   세 스크린 + 앞면 띠를 정면 입면 그대로 한 장의 캔버스에 그리고,
+   3D의 각 스크린은 그 캔버스에서 자기 자리만 떼어 쓴다.
+   A = 스크린마다 따로 (좌·우는 거울상으로 대칭) · B = 전체가 한 장 */
+const PANELS = [
+  {key:'center', frame:SCREENS.center, seed:1},
+  {key:'left',   frame:SCREENS.left,   seed:2},
+  {key:'right',  frame:SCREENS.right,  seed:2, flip:true},
+  {key:'strip',  frame:SCREENS.strip,  seed:3},
+];
+const UNION = bbox(PANELS.map(p=>p.frame));
+const LS = 2.2;
+const ledCanvas = document.createElement('canvas');
+ledCanvas.width = Math.round(UNION.w*LS); ledCanvas.height = Math.round(UNION.h*LS);
+const lx = ledCanvas.getContext('2d');
+
+const LOOKS = {
+  glitch:{spill:[232,54,74],  paint:paintGlitch},
+  sky:   {spill:[110,160,235], paint:paintSky},
+  city:  {spill:[255,80,160],  paint:paintCity},
+};
+function paintVideo(c, f, seed, t, variant, driver){
+  c.fillStyle='#000'; c.fillRect(f.x,f.y,f.w,f.h);
+  if(!vidReady) return;
+  const vw = vid.videoWidth, vh = vid.videoHeight;
+  const s = Math.max(f.w/vw, f.h/vh), w = vw*s, h = vh*s;
+  c.drawImage(vid, f.x+(f.w-w)/2, f.y+(f.h-h)/2, w, h);
+  c.fillStyle = `rgba(0,0,0,${.35*(1-sig[driver])})`; c.fillRect(f.x,f.y,f.w,f.h);
+  if(sig.beatPulse>0){ c.fillStyle=`rgba(255,255,255,${sig.beatPulse*.12})`; c.fillRect(f.x,f.y,f.w,f.h); }
+}
+function paintGlitch(c, f, seed, t, variant){
+  c.fillStyle='#0d0d0f'; c.fillRect(f.x,f.y,f.w,f.h);
+  const bs = 9;
+  const step = Math.floor(t*(1.5+sig.drums*9)) + sig.beatCount*7;
+  const greys = ['#f2f2f2','#d9d9dc','#b8b8bd','#8d8d94','#5a5a61'];
+  for(let y=f.y, row=0; y<f.y+f.h; y+=bs, row++){
+    const shift = hash(row,seed,step) < sig.onset*.6 ? (hash(row,step,3)-.5)*50 : 0;
+    for(let x=f.x, col=0; x<f.x+f.w; x+=bs*1.6, col++){
+      const r = hash(col+seed*31, row, Math.floor(step/(1+col%3)));
+      if(r>.82) continue;
+      c.fillStyle = r < .07 + sig.drums*.18 ? '#e8364a' : greys[Math.floor(hash(col,row+seed)*greys.length)];
+      c.fillRect(x+shift, y, bs*1.6*(.5+hash(col,row,7)*.5)-1, bs-1);
+    }
+  }
+  const cx = variant==='B' ? CENTER.x : f.x+f.w/2, cy = variant==='B' ? CENTER.y : f.y+f.h/2;
+  const amp = variant==='B' ? sig.bass : sig.drums*.6;
+  c.save(); c.lineWidth = 5;
+  for(let k=0;k<18;k++){
+    const r = (k*16 + t*(25+70*amp)) % 290;
+    c.strokeStyle = k%2 ? `rgba(0,0,0,${.35+amp*.5})` : `rgba(255,255,255,${.15+amp*.6})`;
+    c.beginPath(); c.ellipse(cx, cy, r, r*.9, t*.3+k*.4, 0, Math.PI*2); c.stroke();
+  }
+  c.restore();
+}
+function paintSky(c, f, seed, t, variant){
+  if(variant==='A'){
+    c.fillStyle='#1f4fa3'; c.fillRect(f.x,f.y,f.w,f.h);
+    const tw=22, th=17;
+    const pal=[['#cfe3f7','#7fb0e6'],['#f4f1ea','#c9d6e4'],['#7ea36a','#cfe0b4'],['#e39a3b','#f6d29c'],['#16305f','#3c6cb4'],['#ffffff','#9cc3ee']];
+    const epoch = Math.floor(t*.4) + Math.floor(sig.beatCount/4);
+    for(let y=f.y, j=0; y<f.y+f.h; y+=th, j++){
+      for(let x=f.x, i=0; x<f.x+f.w; x+=tw, i++){
+        if(hash(i+seed*17, j, epoch) > .35 + sig.other*.5) continue;
+        const p = pal[Math.floor(hash(i,j,seed+epoch)*pal.length)];
+        const g = c.createLinearGradient(x,y,x+tw,y+th);
+        g.addColorStop(0,p[0]); g.addColorStop(1,p[1]);
+        c.globalAlpha = .55 + .45*(hash(i,j,sig.beatCount)<.15 ? sig.beatPulse : .6);
+        c.fillStyle = g; c.fillRect(x+1,y+1,tw-2,th-2);
+      }
+    }
+    c.globalAlpha = 1;
+  } else {
+    const g = c.createLinearGradient(0,f.y,0,f.y+f.h);
+    g.addColorStop(0,'#2d63c4'); g.addColorStop(.55,'#9fc3ee'); g.addColorStop(1,'#efe6dc');
+    c.fillStyle=g; c.fillRect(f.x,f.y,f.w,f.h);
+    for(let i=0;i<13;i++){
+      const x = f.x - 120 + ((i*173 + t*6*(1+i%3)) % (f.w+240));
+      const y = f.y + f.h*(.2 + .6*hash(i,4));
+      const rad = (45 + 50*hash(i,9)) * (1 + sig.vocal*.35);
+      const cg = c.createRadialGradient(x,y,0,x,y,rad);
+      cg.addColorStop(0,`rgba(255,255,255,${.55+sig.vocal*.35})`); cg.addColorStop(1,'rgba(255,255,255,0)');
+      c.fillStyle=cg; c.beginPath(); c.ellipse(x,y,rad*1.6,rad,0,0,Math.PI*2); c.fill();
+    }
+    c.strokeStyle=`rgba(255,255,255,${.25+sig.bass*.6})`; c.lineWidth=2+sig.bass*3;
+    c.beginPath(); c.arc(CENTER.x, CENTER.y, 70+sig.beatPulse*6, 0, Math.PI*2); c.stroke();
+  }
+}
+function paintCity(c, f, seed, t, variant){   // 분홍 와이어프레임 도시 (레퍼런스 4)
+  c.fillStyle='#050003'; c.fillRect(f.x,f.y,f.w,f.h);
+  const pink = `rgba(255,${95+sig.vocal*60|0},${170+sig.vocal*40|0},`;
+  const scroll = (t*14) % 40;
+  c.lineWidth = .7;
+  // 등고선 (위쪽 산)
+  for(let k=0;k<9;k++){
+    c.strokeStyle = pink+(.35+.04*k)+')'; c.beginPath();
+    for(let s=0;s<=60;s++){ const x=f.x+f.w*s/60;
+      const y=f.y+f.h*(.08+.035*k) + 10*(noise2(x*.02+seed, k*.6+t*.05)-.5);
+      s?c.lineTo(x,y):c.moveTo(x,y); }
+    c.stroke();
+  }
+  // 블록 + 건물 (아래로 흐름)
+  for(let gy=f.y+f.h*.38 - scroll, j=0; gy<f.y+f.h; gy+=40, j++){
+    for(let gx=f.x, i=0; gx<f.x+f.w; gx+=48, i++){
+      const row = j + Math.floor((t*14)/40);
+      for(let b=0;b<4;b++){
+        const r = hash(i+seed*11, row, b);
+        if(r<.25) continue;
+        const bw = 8+hash(i,row,b+5)*14, bh = 6+hash(i,row,b+9)*10;
+        const bx = gx+4+hash(i,row,b+2)*(40-bw), by = gy+4+hash(i,row,b+3)*(30-bh);
+        const hgt = (4 + hash(i,row,b+7)*12) * (1 + sig.bass*1.4);
+        c.strokeStyle = pink+(.55+r*.4)+')';
+        c.strokeRect(bx,by,bw,bh);
+        c.beginPath(); c.moveTo(bx,by); c.lineTo(bx+hgt*.4,by-hgt); c.lineTo(bx+bw+hgt*.4,by-hgt); c.lineTo(bx+bw,by);
+        c.moveTo(bx+bw+hgt*.4,by-hgt); c.lineTo(bx+bw+hgt*.4,by+bh-hgt); c.lineTo(bx+bw,by+bh); c.stroke();
+      }
+    }
+  }
+  // 큰 길
+  c.strokeStyle = pink+(.6+sig.beatPulse*.4)+')'; c.lineWidth = 1.4;
+  c.beginPath(); c.moveTo(f.x+f.w*.3,f.y+f.h); c.lineTo(f.x+f.w*.42,f.y+f.h*.35);
+  c.moveTo(f.x,f.y+f.h*.7); c.quadraticCurveTo(f.x+f.w*.5,f.y+f.h*.55,f.x+f.w,f.y+f.h*.8); c.stroke();
+}
+function drawLEDCanvas(t){
+  const c = lx;
+  c.setTransform(1,0,0,1,0,0); c.fillStyle='#000'; c.fillRect(0,0,ledCanvas.width,ledCanvas.height);
+  c.setTransform(LS,0,0,LS,-UNION.x*LS,-UNION.y*LS);
+  const paintState = (state, alpha) => {
+    const song = SONGS[state.song], look = LOOKS[song.look], drv = song.driver[state.v];
+    c.globalAlpha = alpha;
+    PANELS.forEach(p=>{
+      const r = p.frame;
+      c.save(); c.beginPath(); c.rect(r.x,r.y,r.w,r.h); c.clip();
+      const pin = panelIn[p.key];
+      if(pin && pin.ready){ c.drawImage(pin.video, r.x, r.y, r.w, r.h); c.restore(); return; }   // 레조나 출력 — 판 크기에 맞춰 그대로
+      if(state.v==='B'){
+        if(useVideo) paintVideo(c, UNION, 0, t, 'B', drv); else look.paint(c, UNION, 0, t, 'B');
+      } else {
+        if(p.flip && !useVideo){                        // 오른쪽 = 왼쪽의 거울상
+          const l = SCREENS.left;
+          c.translate(r.x+r.w, 0); c.scale(-1,1); c.translate(-l.x, 0);
+          look.paint(c, l, p.seed, t, 'A');
+        }
+        else if(useVideo) paintVideo(c, r, p.seed, t, 'A', drv);
+        else look.paint(c, r, p.seed, t, 'A');
+      }
+      c.restore();
+    });
+    c.globalAlpha = 1;
+  };
+  if(prev && fade<1) paintState(prev, 1);
+  paintState(cur, prev && fade<1 ? fade : 1);
+  // LED 결
+  c.strokeStyle='rgba(0,0,0,.28)'; c.lineWidth=.7;
+  PANELS.forEach(p=>{ const r=p.frame; c.save(); c.beginPath(); c.rect(r.x,r.y,r.w,r.h); c.clip(); c.beginPath();
+    for(let y=r.y; y<r.y+r.h; y+=2.6){ c.moveTo(r.x,y); c.lineTo(r.x+r.w,y); }
+    for(let x=r.x; x<r.x+r.w; x+=2.6){ c.moveTo(x,r.y); c.lineTo(x,r.y+r.h); }
+    c.stroke(); c.restore(); });
+}
+
+/* ───────── 3D 기본 ───────── */
+const canvas = document.getElementById('gl'), mainEl = document.getElementById('main');
+const renderer = new THREE.WebGLRenderer({canvas, antialias:true});
+renderer.setPixelRatio(Math.min(2, window.devicePixelRatio||1));
+renderer.setClearColor(0x000000);
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x020409, 0.00042);
+const camera = new THREE.PerspectiveCamera(35, 1, 5, 9000);
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true; controls.dampingFactor = .08;
+controls.minDistance = 120; controls.maxDistance = 3600;
+controls.maxPolarAngle = Math.PI*.495;
+controls.zoomSpeed = 1.1;
+
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(512,512), .75, .5, .32);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+
+scene.add(new THREE.AmbientLight(0x1a2236, .7));
+
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(8000,8000),
+  new THREE.MeshStandardMaterial({color:0x05070a, roughness:.62, metalness:.3}));   // 너무 번들거리면 스크린 빛이 객석 한가운데 얼룩으로 맺힘
+floor.rotation.x = -Math.PI/2; floor.position.y = -24; scene.add(floor);   // 객석 바닥 (무대보다 낮음)
+
+/* 라인 빌더 */
+function lineBuilder(){
+  const seg = [];
+  const L = (x0,y0,z0,x1,y1,z1)=>{ seg.push(X(x0),Y(y0),z0, X(x1),Y(y1),z1); };
+  return {seg, L};
+}
+function addLines(seg, mat){
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(seg, 3));
+  const m = new THREE.LineSegments(g, mat); scene.add(m); return m;
+}
+
+/* ───────── 무대 구조 (회색 — 트러스·데크·런웨이) ───────── */
+const greyMat = new THREE.LineBasicMaterial({color:0x8d97a8, transparent:true, opacity:.35});
+{ const {seg, L} = lineBuilder();
+  const wbox=(x,y,w,h,z,d)=>{ [z,z-d].forEach(zz=>{ L(x,y,zz,x+w,y,zz); L(x+w,y,zz,x+w,y+h,zz); L(x+w,y+h,zz,x,y+h,zz); L(x,y+h,zz,x,y,zz); });
+    [[x,y],[x+w,y],[x,y+h],[x+w,y+h]].forEach(([a,b])=>L(a,b,z,a,b,z-d)); };
+  const truss=(x0,x1,y,z,hh)=>{
+    [[y,z],[y+hh,z],[y,z-hh],[y+hh,z-hh]].forEach(([yy,zz])=>L(x0,yy,zz,x1,yy,zz));
+    for(let x=x0,i=0; x<x1; x+=hh,i++){ const x2=Math.min(x1,x+hh);
+      L(x,y,z,x,y+hh,z); L(x,y,z-hh,x,y+hh,z-hh); L(x,y,z,x,y,z-hh); L(x,y+hh,z,x,y+hh,z-hh);
+      L(x,i%2?y:y+hh,z,x2,i%2?y+hh:y,z); L(x,i%2?y:y+hh,z-hh,x2,i%2?y+hh:y,z-hh); } };
+  const tower=(x,y0,y1,z,w)=>{ const pts=[[x,z],[x+w,z],[x+w,z-w],[x,z-w]];
+    pts.forEach(([a,zz])=>L(a,y0,zz,a,y1,zz));
+    for(let y=y0; y<y1-1; y+=w*1.6){ const y2=Math.min(y1,y+w*1.6);
+      for(let i=0;i<4;i++){ const [a1,z1]=pts[i],[a2,z2]=pts[(i+1)%4]; L(a1,y,z1,a2,y,z2); L(a1,y,z1,a2,y2,z2); } } };
+  truss(20,980,22,30,12); truss(20,980,22,-170,12);            // 앞·뒤 조명 트러스
+  for(let x=60;x<=940;x+=110){ L(x,28,18,x,28,-158); }
+  tower(20,22,GROUND,30,14); tower(966,22,GROUND,30,14);       // 그라운드 서포트 (좌우대칭)
+  tower(20,22,GROUND,-158,14); tower(966,22,GROUND,-158,14);
+  wbox(60,GROUND,880,24,48,260);                                // 무대 데크 (높이 24)
+  wbox(460,GROUND,80,24,48+330,330);                            // 런웨이
+  wbox(400,GROUND-26,200,26,-60,70);                            // 드럼 라이저
+  [SCREENS.left,SCREENS.right].forEach(s=>{ const cx=s.x+s.w/2;  // 사이드 스크린 지지대
+    L(cx-60,s.y+s.h,s.z-6,cx-60,GROUND,s.z-6); L(cx+60,s.y+s.h,s.z-6,cx+60,GROUND,s.z-6); });
+  L(CENTER.x-120,22,SCREENS.center.z-6,CENTER.x-120,SCREENS.center.y,SCREENS.center.z-6);   // 중앙 스크린 행잉
+  L(CENTER.x+120,22,SCREENS.center.z-6,CENTER.x+120,SCREENS.center.y,SCREENS.center.z-6);
+  addLines(seg, greyMat);
+}
+
+/* ───────── 무대 안 골목 세트 (흰 라인) ─────────
+   스크린 아래 무대 위에 짜 넣는다 — 왼쪽 셔터 가게 / 가운데 비계 데크·계단 / 오른쪽 오렌지 방·TV.
+   골목 사물이라 좌우 모양은 다르게, 스크린·조명만 대칭. */
+const whiteMat = new THREE.LineBasicMaterial({color:0xffffff, transparent:true, opacity:.75});
+function boxLines(L, x, y, w, h, z, d){
+  [z,z-d].forEach(zz=>{ L(x,y,zz,x+w,y,zz); L(x+w,y,zz,x+w,y+h,zz); L(x+w,y+h,zz,x,y+h,zz); L(x,y+h,zz,x,y,zz); });
+  [[x,y],[x+w,y],[x,y+h],[x+w,y+h]].forEach(([a,b])=>L(a,b,z,a,b,z-d));
+}
+function railing(L, x0, x1, y, z0, z1){
+  [[x0,z0,x1,z0],[x1,z0,x1,z1],[x1,z1,x0,z1],[x0,z1,x0,z0]].forEach(([a,b,c,d])=>{ L(a,y-10,b,c,y-10,d);
+    const n=Math.max(1,Math.round(Math.hypot(c-a,d-b)/12)); for(let i=0;i<=n;i++) L(a+(c-a)*i/n,y,b+(d-b)*i/n,a+(c-a)*i/n,y-10,b+(d-b)*i/n); });
+}
+function tower(L, x, y0, y1, z, w){
+  const pts=[[x,z],[x+w,z],[x+w,z-w],[x,z-w]];
+  pts.forEach(([a,zz])=>L(a,y0,zz,a,y1,zz));
+  for(let y=y0; y<y1-1; y+=w*1.6){ const y2=Math.min(y1,y+w*1.6);
+    for(let i=0;i<4;i++){ const [a1,z1]=pts[i],[a2,z2]=pts[(i+1)%4]; L(a1,y,z1,a2,y,z2); if(i<2) L(a1,y,z1,a2,y2,z2); } }
+}
+function acUnit(L, x, y, z){ boxLines(L, x, y, 16, 12, z, 8); for(let k=2;k<16;k+=3) L(x+k,y+2,z+.5,x+k,y+10,z+.5); }
+function waterTank(L, xc, y, r, h, z){
+  for(let k=0;k<8;k++){ const a0=k/8*Math.PI*2, a1=(k+1)/8*Math.PI*2;
+    [y, y-h].forEach(yy=>L(xc+Math.cos(a0)*r,yy,z+Math.sin(a0)*r, xc+Math.cos(a1)*r,yy,z+Math.sin(a1)*r));
+    L(xc+Math.cos(a0)*r,y,z+Math.sin(a0)*r, xc+Math.cos(a0)*r,y-h,z+Math.sin(a0)*r); }
+}
+const ROOM = {x:735, y:382, w:165, h:123, z:12, d:110};
+const street = (()=>{ const {seg, L} = lineBuilder();
+  // ── 왼쪽: 셔터 가게 + 위층 데크(난간·실외기·물탱크)
+  boxLines(L, 82, 372, 160, GROUND-372, 12, 72);
+  for(let y=386; y<GROUND; y+=4.5) L(92,y,12.6,232,y,12.6);                    // 셔터
+  L(92,382,12.6,232,382,12.6); boxLines(L, 86, 376, 152, 6, 13, 3);
+  boxLines(L, 70, 344, 190, 6, 20, 90); railing(L, 72, 258, 344, 18, -68);       // 위층 데크
+  acUnit(L, 200, 350, 10); acUnit(L, 176, 350, -30); waterTank(L, 104, 344, 16, 26, -40);
+  tower(L, 70, 350, GROUND, 20, 10); tower(L, 250, 350, GROUND, 20, 10);
+  // ── 가운데: 오렌지 방 지붕으로 오르는 계단
+  for(let i=0;i<13;i++){ const x=650+i*6.4, y=GROUND-i*10.4;                   // 계단 (폭 = z −10 ~ −52)
+    [-10,-52].forEach(z=>{ L(x,y,z,x+6.4,y,z); L(x+6.4,y,z,x+6.4,y-10.4,z); }); L(x+6.4,y-10.4,-10,x+6.4,y-10.4,-52); }
+  [-10,-52].forEach(z=>{ L(648,GROUND-26,z,733,GROUND-160,z); for(let i=0;i<6;i++){ const x=652+i*14; L(x,GROUND-30-i*22,z,x,GROUND-4-i*22,z); } });
+  // ── 오른쪽: 오렌지 방 (문틀·커튼·지붕 난간) + 옆 작은 상자
+  boxLines(L, ROOM.x, ROOM.y, ROOM.w, ROOM.h, ROOM.z, ROOM.d);
+  for(let x=ROOM.x+12; x<ROOM.x+ROOM.w; x+=11) L(x,ROOM.y+6,ROOM.z-2,x,GROUND,ROOM.z-2);
+  railing(L, ROOM.x, ROOM.x+ROOM.w, ROOM.y, ROOM.z, ROOM.z-ROOM.d); acUnit(L, 860, 360, -20);
+  boxLines(L, 905, 420, 32, 85, 16, 30); boxLines(L, 905, 456, 32, 2, 16.5, 1);
+  tower(L, 722, 340, GROUND, 18, 10); tower(L, 912, 340, 420, 18, 10);
+  // ── 앞쪽 소품: 라바콘 두 개 (오른쪽만)
+  [[880,52],[902,40]].forEach(([x,z])=>{ for(let k=0;k<6;k++){ const a0=k/6*Math.PI*2, a1=(k+1)/6*Math.PI*2;
+    L(x+Math.cos(a0)*6,GROUND,z+Math.sin(a0)*6, x+Math.cos(a1)*6,GROUND,z+Math.sin(a1)*6); L(x+Math.cos(a0)*6,GROUND,z+Math.sin(a0)*6, x,GROUND-22,z); } });
+  // ── 무대 양옆 확장 무대 — 계단과 창문만으로 레이어 구성 (스케치 범위 안 · 깊이 3겹: 뒤 창문 판 / 가운데 창문 무리 / 앞 계단)
+  const win = (x,y,w,h,z,kind)=>{                                               // 창문 하나 — 틀 + 창살
+    L(x,y,z,x+w,y,z); L(x+w,y,z,x+w,y+h,z); L(x+w,y+h,z,x,y+h,z); L(x,y+h,z,x,y,z);
+    if(kind===1){ L(x+w/2,y,z,x+w/2,y+h,z); }
+    else if(kind===2){ L(x+w/2,y,z,x+w/2,y+h,z); L(x,y+h/2,z,x+w,y+h/2,z); }
+    else if(kind===3){ L(x+w/3,y,z,x+w/3,y+h,z); L(x+w*2/3,y,z,x+w*2/3,y+h,z); }
+    L(x-2,y+h,z+3,x+w+2,y+h,z+3); L(x-2,y+h,z,x-2,y+h,z+3); L(x+w+2,y+h,z,x+w+2,y+h,z+3);   // 창턱
+  };
+  const winField = (x,y,w,h,z,cols,rows,seed,fill=.75)=>{ const cw=w/cols, rh=h/rows;
+    for(let r=0;r<rows;r++) for(let c=0;c<cols;c++){ if(hash(c,r,seed)>fill) continue;
+      const k=Math.floor(hash(r,c,seed+1)*4), ww=cw*(.55+hash(c,r,seed+2)*.25), hh=rh*(.5+hash(c,r,seed+3)*.25);
+      win(x+c*cw+(cw-ww)/2, y+r*rh+(rh-hh)/2, ww, hh, z, k); } };
+  const stair = (xa,ya,xb,yb,z0,z1,n)=>{                                        // 곧은 계단 한 단 — 디딤판·챌판·옆판·양쪽 난간
+    for(let i=0;i<n;i++){ const x0=xa+(xb-xa)*i/n, x1=xa+(xb-xa)*(i+1)/n, y0=ya+(yb-ya)*i/n, y1=ya+(yb-ya)*(i+1)/n;
+      [z0,z1].forEach(z=>{ L(x0,y0,z,x0,y1,z); L(x0,y1,z,x1,y1,z); }); L(x0,y1,z0,x0,y1,z1); }
+    [z0,z1].forEach(z=>{ L(xa,ya,z,xb,yb,z); L(xa,ya-16,z,xb,yb-16,z); L(xa,ya,z,xa,ya-16,z); L(xb,yb,z,xb,yb-16,z); }); };
+  const landing = (x,y,w,z0,z1)=>{ boxLines(L, x, y, w, 3, z0, z0-z1); L(x,y+3,z0,x,GROUND,z0); L(x+w,y+3,z0,x+w,GROUND,z0); L(x,y+3,z1,x,GROUND,z1); L(x+w,y+3,z1,x+w,GROUND,z1); };
+  // 왼쪽 (낮고 빽빽 · 높은 창문 기둥 하나)
+  winField(-138, 150, 118, 355, -72, 3, 8, 11, .8);                             // 뒤: 창문 판
+  winField(-82, 76, 30, 74, -46, 1, 3, 12, 1);                                  //     높은 창문 기둥
+  winField(-118, 300, 140, 205, -28, 3, 4, 13, .7);                             // 가운데: 창문 무리
+  stair(-132, GROUND, -60, 405, -40, -58, 10); landing(-60, 402, 30, -40, -58);    //     뒤쪽 계단
+  stair(-30, 402, -100, 330, -40, -58, 8);
+  stair(56, GROUND, 4, 418, 26, 8, 9); landing(-10, 415, 16, 26, 8);              // 앞: 꺾이는 계단
+  stair(-10, 415, 50, 318, 26, 8, 10); landing(46, 315, 14, 26, 8);
+  // 오른쪽 (높고 성김)
+  winField(1032, 132, 82, 373, -82, 2, 9, 21, .8);                              // 뒤: 높은 창문 기둥
+  winField(958, 250, 104, 255, -34, 3, 5, 22, .65);                             // 가운데: 창문 무리
+  winField(1066, 262, 56, 120, -10, 1, 3, 23, 1);
+  stair(868, GROUND, 958, 327, 20, -2, 14); landing(958, 324, 30, 20, -2);        // 앞: 긴 계단 → 계단참
+  stair(988, 324, 1046, 236, 6, -14, 9); landing(1046, 233, 26, 6, -14);          //     위로 한 번 더
+  return addLines(seg, whiteMat); })();
+
+// 오렌지 방 — 안쪽 벽이 베이스에 맞춰 숨쉼
+const roomMat = new THREE.MeshBasicMaterial({color:0xff8a3c, toneMapped:false});
+const roomWall = new THREE.Mesh(new THREE.PlaneGeometry(ROOM.w-4, ROOM.h-4), roomMat);
+roomWall.position.set(X(ROOM.x+ROOM.w/2), Y(ROOM.y+ROOM.h/2), ROOM.z-ROOM.d+2); scene.add(roomWall);
+const roomLight = new THREE.PointLight(0xff8a3c, .8, 300, 0); roomLight.position.set(X(ROOM.x+ROOM.w/2), Y(ROOM.y+40), ROOM.z-30); scene.add(roomLight);
+// TV (컬러바) — 오렌지 방 왼쪽 위
+const tvTex = (()=>{ const c=document.createElement('canvas'); c.width=140; c.height=88; const x=c.getContext('2d');
+  ['#e9e9e9','#e8e04a','#4ad7e0','#4ae05a','#e04ad2','#e04a4a','#4a5ae0'].forEach((col,i)=>{ x.fillStyle=col; x.fillRect(i*20,0,20,64); });
+  x.fillStyle='#111'; x.fillRect(0,64,140,24); const t=new THREE.CanvasTexture(c); t.colorSpace=THREE.SRGBColorSpace; return t; })();
+const tvMat = new THREE.MeshBasicMaterial({map:tvTex, toneMapped:false});
+const tv = new THREE.Mesh(new THREE.PlaneGeometry(42,27), tvMat); tv.position.set(X(706+21), Y(346+13), 16); scene.add(tv);
+addLines([X(703),Y(343),15, X(751),Y(343),15, X(751),Y(343),15, X(751),Y(376),15, X(751),Y(376),15, X(703),Y(376),15, X(703),Y(376),15, X(703),Y(343),15], whiteMat);
+// 스트링 전구 — 양쪽 확장 세트에 걸림 (가운데는 비움)
+const bulbs2 = [];
+{ const strMat = new THREE.LineBasicMaterial({color:0x9a8a74, transparent:true, opacity:.7});
+  const g = new THREE.SphereGeometry(2.4, 12, 8);
+  const swag = (a, b, n, sag)=>{ const s2=[]; let prev=null;
+    for(let i=0;i<=n;i++){ const u=i/n, p=[a[0]+(b[0]-a[0])*u, a[1]+(b[1]-a[1])*u + 4*sag*u*(1-u), a[2]+(b[2]-a[2])*u];
+      if(prev) s2.push(X(prev[0]),Y(prev[1]),prev[2], X(p[0]),Y(p[1]),p[2]); prev=p;
+      if(i>0 && i<n){ const m=new THREE.Mesh(g, new THREE.MeshBasicMaterial({color:0xffb46e, toneMapped:false})); m.position.set(X(p[0]),Y(p[1]+4),p[2]); scene.add(m); bulbs2.push(m); } }
+    addLines(s2, strMat); };
+  // 왼쪽 — 높은 창문 기둥 꼭대기 ↔ 앞 계단참, 계단 난간 따라
+  swag([-66,78,-46], [53,314,18], 11, 30);
+  swag([56,489,26], [4,402,26], 6, 4);
+  swag([-10,399,26], [50,302,26], 7, 4);
+  swag([-138,152,-72], [-20,152,-72], 7, 10);
+  // 오른쪽 — 창문 기둥 꼭대기 ↔ 위 계단참, 긴 계단 난간 따라
+  swag([1073,134,-82], [1059,230,-14], 6, 12);
+  swag([868,489,20], [958,311,20], 10, 6);
+  swag([988,308,6], [1046,220,6], 6, 5);
+  swag([958,252,-34], [1062,252,-34], 7, 9);
+}
+
+/* 네온 간판 — 영어 · 네온 전용 폰트 (Tilt Neon = 관 네온 / Neonderthaw = 손글씨 네온) */
+const NEON_FONTS = ['Tilt Neon','Neonderthaw','Monoton','Pacifico','Bebas Neue','Righteous','Yellowtail','Bungee'];
+try{ await Promise.race([Promise.all(NEON_FONTS.map(f=>document.fonts.load(`64px "${f}"`))), new Promise(r=>setTimeout(r,3000))]); }catch(e){}
+const neons = [];
+function neonSign(text, color, px, py, w, h, z, opt={}){
+  const S = 8, c = document.createElement('canvas'); c.width = w*S; c.height = h*S;
+  const x = c.getContext('2d');
+  const font = `"${opt.font || (opt.script ? 'Neonderthaw' : 'Tilt Neon')}", ${opt.script ? 'cursive' : '"Avenir Next", sans-serif'}`;
+  x.textAlign='center'; x.textBaseline='middle'; x.lineJoin='round';
+  const draw = (blur, col, alpha)=>{ x.save(); x.shadowColor=color; x.shadowBlur=blur; x.globalAlpha=alpha; x.fillStyle=col;
+    if(opt.vertical){ const ch=[...text], fs=Math.min(c.width*.8, c.height/ch.length*.86); x.font=`${fs}px ${font}`;
+      ch.forEach((t,i)=>x.fillText(t, c.width/2, c.height*(i+.5)/ch.length)); }
+    else { let fs=c.height*(opt.script?.9:.7); x.font=`${fs}px ${font}`; const m=x.measureText(text).width; if(m>c.width*.9){ fs*=c.width*.9/m; x.font=`${fs}px ${font}`; }
+      x.fillText(text, c.width/2, c.height*(opt.script?.56:.54)); }
+    x.restore(); };
+  draw(S*3, color, .75); draw(S*1.2, color, 1);                              // 바깥 번짐 → 관 색
+  x.save(); x.lineJoin='round'; x.strokeStyle='#ffffff'; x.lineWidth = S*(opt.script ? .55 : .25); x.shadowColor=color; x.shadowBlur=S*.8;   // 흰 심 (손글씨는 두껍게)
+  { const font2 = font; if(opt.vertical){ const ch=[...text], fs=Math.min(c.width*.8, c.height/ch.length*.86); x.font=`${fs}px ${font2}`; ch.forEach((t,i)=>x.strokeText(t, c.width/2, c.height*(i+.5)/ch.length)); }
+    else { let fs=c.height*(opt.script?.9:.7); x.font=`${fs}px ${font2}`; const m=x.measureText(text).width; if(m>c.width*.9){ fs*=c.width*.9/m; x.font=`${fs}px ${font2}`; } x.strokeText(text, c.width/2, c.height*(opt.script?.56:.54)); } }
+  x.restore(); draw(S*.3, '#ffffff', .95);
+  if(opt.frame){ x.save(); x.strokeStyle=color; x.lineWidth=S*.7; x.shadowColor=color; x.shadowBlur=S*3; x.strokeRect(S*1.2,S*1.2,c.width-S*2.4,c.height-S*2.4); x.restore(); }
+  const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
+  const mat = new THREE.MeshBasicMaterial({map:tex, transparent:true, toneMapped:false, side:THREE.DoubleSide, depthWrite:false, blending:THREE.AdditiveBlending});
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
+  m.position.set(X(px+w/2), Y(py+h/2), z); if(opt.ry) m.rotation.y = opt.ry; scene.add(m);
+  neons.push({mat, seed:neons.length});
+  return m;
+}
+// 크기를 일부러 제각각 — 큰 것(Rock n Roll·LIVE MUSIC·CLUB) / 중간 / 작은 것(BAR) / 세로(TIGERS·RECORDS). 틀 없이 글씨만
+neonSign('Rock n Roll', '#ff2e88', -160, 62, 200, 74, -70, {script:true, font:'Pacifico'});   // 왼쪽 뒤 창문 판 위 — 가장 큼
+neonSign('Hongdae', '#ff8c1a', -132, 240, 128, 44, -26, {script:true, font:'Yellowtail'});      // 왼쪽 가운데 창문 무리
+neonSign('Live', '#ff4fd8', 238, 334, 92, 54, 14, {script:true, font:'Neonderthaw'});            // 셔터 가게 옆 위
+neonSign('OPEN 24H', '#ff2b2b', -132, 440, 124, 28, 34, {font:'Bebas Neue'});                      // 왼쪽 확장 무대 아래 앞 — 셔터 흰 선을 피해 어두운 자리로
+{ const back = new THREE.Mesh(new THREE.PlaneGeometry(132, 34), new THREE.MeshBasicMaterial({color:0x000000, transparent:true, opacity:.85, depthWrite:false}));
+  back.position.set(X(-132+62), Y(440+14), 33); scene.add(back); }              // 글씨 뒤 검은 판 — 뒤의 창문 선이 비치지 않게
+neonSign('TIGERS', '#ffb21a', 252, 392, 24, 112, 14, {vertical:true, font:'Bungee'});        // 셔터 가게 옆 세로
+neonSign('CLUB', '#22e6ff', 756, 336, 140, 44, 13, {font:'Monoton'});                           // 오렌지 방 위
+neonSign('BAR', '#a35bff', 903, 428, 36, 24, 17, {font:'Righteous'});                             // 오른쪽 작은 상자 — 작게
+neonSign('LIVE MUSIC', '#8fd8ff', 990, 70, 150, 44, -80, {font:'Bebas Neue'});                     // 오른쪽 창문 기둥 위
+neonSign('Karaoke', '#9dff3a', 952, 392, 112, 40, -32, {font:'Righteous'});       // 오른쪽 가운데 창문 무리
+neonSign('RECORDS', '#ffe14a', 1066, 262, 26, 160, -9, {vertical:true, font:'Tilt Neon'});      // 오른쪽 세로
+const neonPink = new THREE.PointLight(0xff4fa0, .8, 260, 0); neonPink.position.set(X(250), Y(410), 60); scene.add(neonPink);
+const neonCyan = new THREE.PointLight(0x3ef0ff, .8, 240, 0); neonCyan.position.set(X(815), Y(370), 60); scene.add(neonCyan);
+
+/* ───────── 셔터·커튼 — 포스터 + 이퀄라이저 ─────────
+   왼쪽 셔터 = 드럼 레벨 미터(살이 아래→위로 차오름) · 오른쪽 커튼 = 12줄 스펙트럼(베이스→고음)
+   섞는 방식: split 나누기(포스터는 사람 키 높이까지, 그 위가 이퀄라이저 · B 큐엔 이퀄라이저가 끝까지 덮음)
+              overlay 겹치기(포스터 전체 + 살 틈으로 새는 빛) · cue 큐 따라(A 포스터 / B 이퀄라이저) */
+const SURF = [
+  {key:'shutter', x:92,  y:386, w:140, h:119, z:12.6, cols:1,  rows:26, col:[1,.25,.6],  seed:31},
+  {key:'curtain', x:744, y:388, w:152, h:117, z:ROOM.z-2, cols:12, rows:20, col:[.15,.9,1], seed:47},
+];
+const POSTER_TOP = GROUND - 62;                                  // 사람 키(≈66) 높이까지만 포스터
+let surfPoster = true, surfEQ = true, surfMode = 'split';
+function posterCanvas(w, h, seed){                               // 홍대 셔터에 덕지덕지 붙은 공연 전단 + 스프레이 그래피티
+  const S=5, c=document.createElement('canvas'); c.width=w*S; c.height=h*S; const x=c.getContext('2d');
+  const R=(a,b=0)=>hash(a,b,seed);
+  const texts=[['FAR EAST','ASIA TIGERS'],['GGATA','LIVE'],['SAT NIGHT','HONGDAE'],['ROCK N','ROLL'],['TIGERS','11.12'],['VINYL','NIGHT'],['NO','SLEEP'],['OPEN','MIC']];
+  const paper=['#efe8da','#111111','#e8312f','#ffd23f','#1fb7d4','#f4f1ea','#ff5ab4'];
+  for(let i=0;i<16;i++){
+    const pw=(22+R(i,1)*30)*S, ph=pw*(1.25+R(i,2)*.3), px=R(i,3)*(c.width-pw*.6)-pw*.2, py=R(i,4)*(c.height-ph*.5)-ph*.2;
+    const bg=paper[Math.floor(R(i,5)*paper.length)], dark = bg==='#111111'||bg==='#e8312f'||bg==='#1fb7d4';
+    x.save(); x.translate(px+pw/2, py+ph/2); x.rotate((R(i,6)-.5)*.22);
+    x.fillStyle=bg; x.fillRect(-pw/2,-ph/2,pw,ph);
+    x.fillStyle = dark ? '#f4f1ea' : '#111';
+    const t=texts[Math.floor(R(i,7)*texts.length)];
+    x.textAlign='center'; x.font=`${pw*.24}px "Bebas Neue","Bungee",sans-serif`; x.fillText(t[0],0,-ph*.12);
+    x.font=`${pw*.2}px "Bungee","Bebas Neue",sans-serif`; x.fillText(t[1],0,ph*.12);
+    x.fillRect(-pw*.35, ph*.28, pw*.7, S*.6);
+    x.fillStyle='rgba(230,225,200,.7)'; x.fillRect(-pw/2-2,-ph/2-2,pw*.22,S*2.2); x.fillRect(pw/2-pw*.22+2,ph/2-S*2,pw*.22,S*2.2);   // 테이프
+    x.restore();
+  }
+  x.lineCap='round'; x.lineJoin='round';                         // 스프레이 그래피티
+  [['#ff2e88',0],['#9dff3a',1],['#22e6ff',2]].forEach(([col,k])=>{ x.strokeStyle=col; x.shadowColor=col; x.shadowBlur=S*2; x.lineWidth=S*(1.6+R(k,9));
+    x.beginPath(); let px=R(k,10)*c.width*.3, py=c.height*(.25+R(k,11)*.6); x.moveTo(px,py);
+    for(let j=0;j<5;j++){ px+=c.width*(.08+R(k,j+12)*.14); x.quadraticCurveTo(px-c.width*.05, py+(R(k,j+20)-.5)*c.height*.5, px, py+(R(k,j+30)-.5)*c.height*.3); } x.stroke(); });
+  x.shadowBlur=S*3; x.shadowColor='#ffb21a'; x.fillStyle='#ffb21a'; x.font=`${c.height*.22}px "Yellowtail","Pacifico",cursive`; x.save(); x.translate(c.width*.55,c.height*.7); x.rotate(-.12); x.fillText('tigers!',0,0); x.restore();
+  const tex=new THREE.CanvasTexture(c); tex.colorSpace=THREE.SRGBColorSpace; return tex;
+}
+SURF.forEach(sf=>{
+  // 포스터 판 (전체 크기 텍스처 — 나누기 모드에선 아래쪽만 잘라 보여줌)
+  sf.tex = sf.texDefault = posterCanvas(sf.w, sf.h, sf.seed);
+  sf.posterMat = new THREE.MeshBasicMaterial({map:sf.tex, transparent:true, depthWrite:false});
+  sf.poster = new THREE.Mesh(new THREE.PlaneGeometry(1,1), sf.posterMat); scene.add(sf.poster);
+  // 이퀄라이저 칸 (가산 혼합 — 꺼진 칸은 안 보임)
+  const cw = sf.w/sf.cols, rh = sf.h/sf.rows;
+  sf.eq = new THREE.InstancedMesh(new THREE.PlaneGeometry(cw*(sf.cols>1?.78:.96), rh*.62),
+    new THREE.MeshBasicMaterial({toneMapped:false, transparent:true, depthWrite:false, blending:THREE.AdditiveBlending}), sf.cols*sf.rows);
+  const m4 = new THREE.Matrix4(); let n=0;
+  for(let c=0;c<sf.cols;c++) for(let r=0;r<sf.rows;r++){
+    const px = sf.x + cw*(c+.5), py = sf.y + sf.h - rh*(r+.5);              // r=0 이 맨 아래
+    m4.makeTranslation(X(px), Y(py), sf.z+.6); sf.eq.setMatrixAt(n, m4); sf.eq.setColorAt(n, new THREE.Color(0,0,0)); n++; }
+  scene.add(sf.eq);
+  sf.levels = new Float32Array(sf.cols); sf.peaks = new Float32Array(sf.cols);
+});
+function setPosterImage(key, file){                             // 셔터·커튼 포스터를 내가 만든 이미지로
+  const sf = SURF.find(x=>x.key===key), img = new Image();
+  img.onload = ()=>{ const tex = new THREE.Texture(img); tex.colorSpace = THREE.SRGBColorSpace; tex.needsUpdate = true;
+    sf.tex = tex; sf.posterMat.map = tex; sf.posterMat.needsUpdate = true;
+    const r = img.width/img.height, want = sf.w/sf.h;
+    document.getElementById('imgNote').textContent = `${key==='shutter'?'왼쪽 셔터':'오른쪽 커튼'} ← ${file.name} (${img.width}×${img.height})`
+      + (Math.abs(r-want)/want > .15 ? ` · 비율이 달라 늘려서 맞춤 (권장 ${want.toFixed(2)}:1)` : '');
+    document.getElementById(key==='shutter'?'imgShutter':'imgCurtain').classList.add('on'); };
+  img.src = URL.createObjectURL(file);
+}
+function resetPosters(){ SURF.forEach(sf=>{ sf.tex = sf.texDefault; sf.posterMat.map = sf.texDefault; sf.posterMat.needsUpdate = true; });
+  ['imgShutter','imgCurtain'].forEach(id=>document.getElementById(id).classList.remove('on'));
+  document.getElementById('imgNote').textContent = '기본 포스터로 되돌렸어요'; }
+{ let target = 'shutter'; const fi = document.getElementById('imgFile');
+  document.getElementById('imgShutter').onclick = ()=>{ target='shutter'; fi.click(); };
+  document.getElementById('imgCurtain').onclick = ()=>{ target='curtain'; fi.click(); };
+  document.getElementById('imgReset').onclick = resetPosters;
+  fi.onchange = e=>{ const f=e.target.files[0]; if(f) setPosterImage(target, f); fi.value=''; }; }
+function placePoster(sf, y0){                                    // 포스터를 y0~바닥 구간만 보이게
+  const h = GROUND - y0;
+  sf.poster.scale.set(sf.w, h, 1); sf.poster.position.set(X(sf.x+sf.w/2), Y(y0+h/2), sf.z+.3);
+  sf.tex.repeat.set(1, h/sf.h); sf.tex.offset.set(0, 0);
+}
+function updateSurfaces(t, dt){
+  const isB = cur.v==='B';
+  SURF.forEach(sf=>{
+    // 모드별 — 포스터 구간 · 이퀄라이저 상한 · 세기
+    let posterOn = surfPoster, posterY = sf.y, posterA = .42 + sig.rms*.15, eqGain = 1;
+    if(surfMode==='split') posterY = POSTER_TOP;
+    if(surfMode==='overlay') eqGain = .55;
+    if(surfMode==='cue'){ posterOn = surfPoster && !isB; if(!isB) eqGain = 0; }
+    if(surfMode==='split' && isB) posterA *= .3;                 // B 큐 — 이퀄라이저가 포스터를 덮음
+    sf.poster.visible = posterOn;
+    if(posterOn){ placePoster(sf, posterY); sf.posterMat.opacity = Math.min(1, posterA); }
+    // 레벨
+    const src = sf.key==='shutter' ? [sig.drums] : [sig.bass,sig.low,sig.low,sig.drums,sig.drums,sig.other,sig.other,sig.vocal,sig.vocal,sig.vocal,sig.hi,sig.hi];
+    for(let c=0;c<sf.cols;c++){ const v = clamp(src[c] * (sf.key==='shutter'?1.15:1.1) + (hash(c,Math.floor(t*12))-.5)*.08, 0, 1);
+      sf.levels[c] += (v - sf.levels[c]) * Math.min(1, dt*(v>sf.levels[c]?28:7));
+      sf.peaks[c] = Math.max(sf.levels[c], sf.peaks[c] - dt*.45); }
+    // 칸 색
+    let n=0; const splitLimitRow = Math.floor((GROUND - POSTER_TOP)/(sf.h/sf.rows));   // 나누기 모드에서 포스터가 차지하는 아래 칸 수
+    const r0 = (surfMode==='split' && !isB && surfPoster) ? splitLimitRow : 0;    // 나누기: 포스터 위 구간에서 아래부터 차오름
+    for(let c=0;c<sf.cols;c++) for(let r=0;r<sf.rows;r++){
+      const span = sf.rows - r0, u = (r - r0 + .5)/span;
+      const lit = r >= r0 && u < sf.levels[c], peak = r >= r0 && Math.abs(u - sf.peaks[c]) < .5/span;
+      let k = (lit ? .9 : 0) + (peak ? .8 : 0);
+      if(!surfEQ || !cityOn) k = 0;
+      k *= eqGain;
+      const w = Math.max(0,u)*.6;                               // 위로 갈수록 흰빛
+      tmpC.setRGB((sf.col[0]*(1-w)+w)*k*1.6, (sf.col[1]*(1-w)+w)*k*1.6, (sf.col[2]*(1-w)+w)*k*1.6);
+      sf.eq.setColorAt(n++, tmpC);
+    }
+    sf.eq.instanceColor.needsUpdate = true;
+  });
+}
+
+/* 신호등 (무대 앞 왼쪽 모서리) · 이발소 사인볼 (셔터 가게 옆) */
+const cityGlow = []; const lits = [];
+let cityOn = true;
+const TL = {};
+{ const poleM = new THREE.MeshStandardMaterial({color:0x2a2e36, roughness:.5, metalness:.6});
+  const housingM = new THREE.MeshStandardMaterial({color:0x14161b, roughness:.6});
+  const cyl=(r,h,x,y,z,rz=0)=>{ const m=new THREE.Mesh(new THREE.CylinderGeometry(r,r,h,10), poleM); m.position.set(x,y,z); m.rotation.z=rz; scene.add(m); return m; };
+  const vx = X(44), vz = 70, top = Y(GROUND)+205;                              // 실제보다 크게 (약 2배) · 팔은 바깥(왼쪽)으로 — LED 판을 가리지 않게
+  cyl(3.6, 205, vx, Y(GROUND)+102, vz); cyl(2.4, 100, vx-50, top, vz, Math.PI/2);
+  const hb = new THREE.Mesh(new THREE.BoxGeometry(124,32,14), housingM); hb.position.set(vx-92, top-18, vz); scene.add(hb);
+  TL.car = ['#ff1a1a','#ffbf00','#00ff6a','#00ff6a'].map((col,i)=>{
+    const lx = vx-134+14+i*28;
+    const lm = new THREE.Mesh(new THREE.CircleGeometry(11,28), new THREE.MeshBasicMaterial({color:col, toneMapped:false}));
+    lm.position.set(lx, top-18, vz+7.2); scene.add(lm);
+    const hood = new THREE.Mesh(new THREE.CylinderGeometry(12.5,12.5,6,24,1,true,0,Math.PI), housingM);   // 차양
+    hood.rotation.set(Math.PI/2,0,Math.PI/2); hood.position.set(lx, top-18, vz+10); scene.add(hood);
+    if(i===2){ const ar = new THREE.Mesh(new THREE.PlaneGeometry(12,3.4), new THREE.MeshBasicMaterial({color:0x000000})); ar.position.set(lx, top-18, vz+7.4); scene.add(ar); }
+    return {m:lm, base:new THREE.Color(col)}; });
+}
+const barber = (()=>{ const c=document.createElement('canvas'); c.width=64; c.height=128; const x=c.getContext('2d');
+  x.fillStyle='#fff'; x.fillRect(0,0,64,128);
+  for(let k=-4;k<12;k++){ x.fillStyle = k%2 ? '#ff1f2e' : '#1e5bff'; x.beginPath(); const y=k*22; x.moveTo(0,y); x.lineTo(64,y-28); x.lineTo(64,y-17); x.lineTo(0,y+11); x.fill(); }
+  const tex=new THREE.CanvasTexture(c); tex.colorSpace=THREE.SRGBColorSpace; tex.wrapT=THREE.RepeatWrapping;
+  const m=new THREE.Mesh(new THREE.CylinderGeometry(8.5,8.5,58,28,1,true), new THREE.MeshBasicMaterial({map:tex, toneMapped:false}));   // 실제보다 크게
+  m.position.set(X(62), Y(GROUND)+74, 40); scene.add(m); cityGlow.push(m.material);
+  [1,-1].forEach(sg=>{ const cap=new THREE.Mesh(new THREE.SphereGeometry(9.2,20,10,0,Math.PI*2,0,Math.PI/2), new THREE.MeshBasicMaterial({color:0xf4f7ff, toneMapped:false}));
+    cap.position.set(X(62), Y(GROUND)+74+sg*29, 40); if(sg<0) cap.rotation.x=Math.PI; scene.add(cap); cityGlow.push(cap.material); });
+  const br = new THREE.Mesh(new THREE.BoxGeometry(4,4,22), new THREE.MeshStandardMaterial({color:0x2a2e36, metalness:.6, roughness:.5})); br.position.set(X(62), Y(GROUND)+74, 28); scene.add(br);
+  return tex; })();
+function updateCity(t){
+  const bass = sig.bass, ra = cityOn ? .16 + bass*.22 : .02;
+  roomMat.color.setRGB(ra*1.0, ra*.48, ra*.18); roomLight.intensity = cityOn ? .4 + bass*1.2 : 0;
+  tvMat.color.setScalar(cityOn ? .9 + (hash(Math.floor(t*20))<.1 ? .4 : 0) : .05);
+  bulbs2.forEach((m,i)=>{ const hit = cityOn ? ((i%4)===((sig.beatInBar|0)-1+4)%4 ? sig.beatPulse : 0) : 0;
+    const a = cityOn ? .5 + sig.rms*.4 + hit*1.2 : .04; m.material.color.setRGB(1.6*a, 1.05*a, .5*a); });
+  const ph = sig.beatCount % 16;                         // 신호등 16박 주기
+  const on = [ph>=10, ph===8||ph===9, ph>=12, ph<8];
+  TL.car.forEach((l,i)=>l.m.material.color.copy(l.base).multiplyScalar(cityOn && on[i] ? 2.6 : .08));
+  if(cityOn) barber.offset.y = (t*.35) % 1;
+}
+function setCity(on){                                    // 전식 ON/OFF
+  cityOn = on;
+  cityGlow.forEach(m=>m.color.setScalar(on ? 1 : .06));
+  document.getElementById('tgCity').classList.toggle('on', on);
+}
+
+/* ───────── 전봇대 (일부러 비대칭 — 두 개의 모양·높이·위치가 다름) ─────────
+   왼쪽 = 높고 곧음, 완목 3단 + 변압기 + 늘어진 케이블 / 오른쪽 = 낮고 살짝 기움, 완목 1단 + 가로등 팔 */
+const poleMat = new THREE.LineBasicMaterial({color:0xe8eef8, transparent:true, opacity:.7});
+const POLE_L = {x:28,  z:24,  top:-70, lean:0};
+const POLE_R = {x:958, z:-64, top:70,  lean:9};
+{ const {seg, L} = lineBuilder();
+  // 왼쪽
+  { const {x,z,top} = POLE_L;
+    [[0,0],[0,-8]].forEach(([dx,dz])=>{ L(x-5,top,z+dz,x-3,GROUND,z+dz); L(x+5,top,z+dz,x+3,GROUND,z+dz); });
+    [top+30, top+36, top+80].forEach((y,i)=>{ const w=i===2?28:42; L(x-w,y,z-4,x+w,y-2,z-4); L(x-w,y,z+2,x-w,y,z-10); L(x+w,y-2,z+2,x+w,y-2,z-10);
+      for(let k=-w;k<=w;k+=14) boxLines(L, x+k-1.5, y-7, 3, 6, z-2, 3); });
+    boxLines(L, x+6, top+120, 16, 34, z+2, 14); boxLines(L, x-20, top+124, 11, 22, z, 9);   // 변압기 둘
+    for(let k=0;k<5;k++){ const cx=x+12+k*7; L(cx,top+40,z-6-k*4, cx+k*2,GROUND,z-6-k*4); } // 늘어진 케이블
+    for(let y=top+200; y<GROUND-20; y+=26) L(x-6,y,z-4,x+6,y-6,z-4);                         // 발판 볼트
+  }
+  // 오른쪽
+  { const {x,z,top,lean} = POLE_R;
+    const px = y => x + lean*(GROUND-y)/(GROUND-top);
+    L(px(top)-4,top,z,x-3,GROUND,z); L(px(top)+4,top,z,x+3,GROUND,z);
+    L(px(top)-4,top,z-7,x-3,GROUND,z-7); L(px(top)+4,top,z-7,x+3,GROUND,z-7);
+    const ya = top+26; L(px(ya)-34,ya+3,z-3,px(ya)+24,ya-2,z-3);                              // 기울어진 완목 1단
+    for(let k=-30;k<=20;k+=12) boxLines(L, px(ya)+k, ya-6, 3, 5, z-1, 3);
+    const yl = top+70; L(px(yl),yl,z-3, px(yl)-46,yl-18,z+6); L(px(yl)-46,yl-18,z+6, px(yl)-58,yl-14,z+8); // 가로등 팔
+    boxLines(L, px(yl)-66, yl-16, 16, 5, z+11, 8);
+    boxLines(L, px(top+150)-9, top+150, 9, 26, z+2, 8);                                       // 작은 함
+  }
+  addLines(seg, poleMat);
+}
+// 전선 — 두 전봇대 사이로 무대 위를 가로질러 늘어짐 (높이가 달라 기울어진 처짐) + 각자 다른 잔선
+const WIRES = [];
+for(let i=0;i<6;i++) WIRES.push({a:[POLE_L.x-30+i*12, POLE_L.top+30+(i>3?6:0), POLE_L.z-4], b:[POLE_R.x+POLE_R.lean*.8-28+i*10, POLE_R.top+26, POLE_R.z-3], sag:150+i*14, ph:i});
+for(let i=0;i<3;i++) WIRES.push({a:[POLE_L.x+20, POLE_L.top+80, POLE_L.z-4], b:[300+i*40, 160+i*12, -110], sag:60+i*18, ph:i+7});
+for(let i=0;i<2;i++) WIRES.push({a:[POLE_R.x, POLE_R.top+26, POLE_R.z-3], b:[930-i*60, 22, -170], sag:30+i*20, ph:i+11});
+// 노란 선 — 전봇대에서 양옆 확장 무대(창문 기둥·창문 판)로 늘어지는 전깃줄
+WIRES.push({a:[POLE_L.x, 38, POLE_L.z-4],  b:[-66, 80, -46], sag:12, ph:13});
+WIRES.push({a:[POLE_L.x-6, 60, POLE_L.z-4], b:[-90, 152, -72], sag:36, ph:14});
+WIRES.push({a:[POLE_L.x+4, 20, POLE_L.z-4], b:[-24, 152, -72], sag:22, ph:15});
+WIRES.push({a:[POLE_R.x, POLE_R.top+26, POLE_R.z-3], b:[1040, 134, -82], sag:14, ph:16});
+WIRES.push({a:[POLE_R.x+4, POLE_R.top+40, POLE_R.z-3], b:[1060, 236, -14], sag:26, ph:17});
+WIRES.push({a:[1110, 134, -82], b:[1120, 262, -10], sag:8, ph:18});
+const WSEG = 30;
+const wireGeo = new THREE.BufferGeometry();
+const wirePos = new Float32Array(WIRES.length*WSEG*6);
+wireGeo.setAttribute('position', new THREE.BufferAttribute(wirePos, 3));
+scene.add(new THREE.LineSegments(wireGeo, poleMat));
+function updateWires(t){
+  let k=0;
+  WIRES.forEach(w=>{
+    const sag = w.sag + Math.sin(t*1.2+w.ph)*(2+sig.bass*6);
+    const P = s => [ w.a[0]+(w.b[0]-w.a[0])*s, w.a[1]+(w.b[1]-w.a[1])*s + 4*sag*.45*s*(1-s), w.a[2]+(w.b[2]-w.a[2])*s ];
+    for(let i=0;i<WSEG;i++){
+      const p0=P(i/WSEG), p1=P((i+1)/WSEG);
+      wirePos[k++]=X(p0[0]); wirePos[k++]=Y(p0[1]); wirePos[k++]=p0[2];
+      wirePos[k++]=X(p1[0]); wirePos[k++]=Y(p1[1]); wirePos[k++]=p1[2];
+    }
+  });
+  wireGeo.attributes.position.needsUpdate = true;
+}
+
+/* ───────── 스크린 ───────── */
+const ledTex = new THREE.CanvasTexture(ledCanvas);
+ledTex.colorSpace = THREE.SRGBColorSpace; ledTex.anisotropy = 4;
+function screenMesh(r){
+  const g = new THREE.PlaneGeometry(r.w, r.h);
+  const u0=(r.x-UNION.x)/UNION.w, u1=(r.x+r.w-UNION.x)/UNION.w;
+  const v1=1-(r.y-UNION.y)/UNION.h, v0=1-(r.y+r.h-UNION.y)/UNION.h;
+  g.setAttribute('uv', new THREE.Float32BufferAttribute([u0,v1, u1,v1, u0,v0, u1,v0], 2));
+  const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({map:ledTex, toneMapped:false}));
+  m.position.set(X(r.x+r.w/2), Y(r.y+r.h/2), r.z); m.rotation.y = r.ry;
+  scene.add(m);
+  const frame = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(r.w+6, r.h+6, 8)), greyMat);
+  frame.position.copy(m.position); frame.position.z -= 5; frame.rotation.y = r.ry; scene.add(frame);
+  return m;
+}
+const screenMeshes = Object.values(SCREENS).map(screenMesh);
+let screensOn = true;
+const ledLight = new THREE.PointLight(0xffffff, 1, 620, 0);              // 스크린이 무대·객석 앞쪽을 물들이는 빛 — 색은 스크린 실제 평균색
+ledLight.position.set(0, Y(CENTER.y), 40); scene.add(ledLight);
+// 스크린 평균색 읽기 — LED 캔버스를 8×4로 줄여 평균. 영상이 다른 출처라 읽을 수 없으면 곡 색으로
+const screenAvg = {c:new THREE.Color(1,1,1), lum:.5, ok:true};
+const avgCanvas = document.createElement('canvas'); avgCanvas.width = 8; avgCanvas.height = 4;
+const avgCtx = avgCanvas.getContext('2d', {willReadFrequently:true});
+function sampleScreen(){
+  try{
+    avgCtx.drawImage(ledCanvas, 0, 0, 8, 4);
+    const d = avgCtx.getImageData(0,0,8,4).data; let r=0,g=0,b=0;
+    for(let i=0;i<d.length;i+=4){ r+=d[i]; g+=d[i+1]; b+=d[i+2]; }
+    const n = d.length/4; r/=n*255; g/=n*255; b/=n*255;
+    screenAvg.lum = .2126*r + .7152*g + .0722*b;
+    const m = Math.max(r,g,b,.001);                                       // 밝기는 따로 두고 색만 — 최댓값으로 정규화 + 채도 살짝 올림
+    const hsl = new THREE.Color(r/m, g/m, b/m).getHSL({});
+    screenAvg.c.setHSL(hsl.h, Math.min(1, hsl.s*1.25), .5);
+    screenAvg.ok = true;
+  }catch(e){ screenAvg.ok = false; }
+}
+
+/* ───────── 콘서트 조명 ───────── */
+// 빔 엣지 — 0 = 하드(윤곽 또렷·좁음) ~ 1 = 소프트(가장자리 번짐·넓음). 슬라이더로 조절
+const beamEdge = {value:.55};
+function beamMaterial(){
+  const u = {uColor:{value:new THREE.Color(1,1,1)}, uOpacity:{value:.25}, uEdge:beamEdge};
+  const mat = new THREE.ShaderMaterial({ uniforms:u, transparent:true, depthWrite:false, side:THREE.DoubleSide, blending:THREE.AdditiveBlending,
+    vertexShader:`varying vec3 vN; varying vec3 vV; varying float vY;
+      void main(){ vec4 mv = modelViewMatrix*vec4(position,1.); vN = normalize(normalMatrix*normal); vV = -mv.xyz; vY = uv.y; gl_Position = projectionMatrix*mv; }`,
+    fragmentShader:`uniform vec3 uColor; uniform float uOpacity; uniform float uEdge; varying vec3 vN; varying vec3 vV; varying float vY;
+      void main(){
+        float facing = abs(dot(normalize(vN), normalize(vV)));          // 1 = 빔 가운데, 0 = 윤곽
+        float edgeA = mix(smoothstep(.0, .12, facing) * (1. + .6*(1.-facing)),   // 하드: 윤곽까지 꽉 차고 테두리가 살짝 밝음
+                          pow(facing, 2.6), uEdge);                               // 소프트: 가장자리로 갈수록 사라짐
+        float along = pow(vY, mix(1.3, 2.2, uEdge));                      // 조명기에서 멀어질수록 흐려짐
+        gl_FragColor = vec4(uColor, uOpacity * edgeA * along);
+      }`});
+  mat.color = u.uColor.value;
+  Object.defineProperty(mat, 'opacity', {get(){ return u.uOpacity.value; }, set(v){ u.uOpacity.value = v; }});
+  return mat;
+}
+const beamCones = [];
+function makeBeam(len, spread){
+  const geo = new THREE.ConeGeometry(spread, len, 36, 1, true); geo.translate(0,-len/2,0);
+  const mat = beamMaterial();
+  const g = new THREE.Group(); const cone = new THREE.Mesh(geo, mat); g.add(cone); beamCones.push(cone);
+  const head = new THREE.Mesh(new THREE.BoxGeometry(14,16,14), new THREE.MeshStandardMaterial({color:0x111318, roughness:.5}));
+  g.add(head);
+  const lens = new THREE.Mesh(new THREE.CircleGeometry(5,16), new THREE.MeshBasicMaterial({color:0xffffff, toneMapped:false}));
+  lens.rotation.x = Math.PI/2; lens.position.y = -8.2; g.add(lens);
+  scene.add(g); return {g, cone, mat, lens};
+}
+const DOWN = new THREE.Vector3(0,-1,0), aimV = new THREE.Vector3();
+const _ax = new THREE.Vector3(), _ap = new THREE.Vector3(), _cp = new THREE.Vector3();
+function nearFade(b, len){                     // 카메라가 빔 안·근처에 들어오면 그 빔을 흐리게 (화면이 하얗게 타는 것 방지)
+  _ax.copy(DOWN).applyQuaternion(b.g.quaternion);
+  _ap.copy(b.g.position); _cp.copy(camera.position).sub(_ap);
+  const s = clamp(_cp.dot(_ax), 0, len);
+  const d = _cp.sub(_ax.multiplyScalar(s)).length();
+  return clamp((d - 60) / 300, 0, 1);
+}
+function aim(obj, dx, dy, dz){ obj.quaternion.setFromUnitVectors(DOWN, aimV.set(dx,dy,dz).normalize()); }
+const _q = new THREE.Quaternion();
+function aimSmooth(obj, d, dt){ _q.setFromUnitVectors(DOWN, aimV.set(d[0],d[1],d[2]).normalize()); obj.quaternion.slerp(_q, Math.min(1, dt*3.5)); }
+/* ── 무빙 패턴 — 빔이 그리는 모양. b.up = 바닥 업라이트, b.row = 0 앞 트러스 / 1 뒤 트러스 ── */
+const BEAM_PATTERNS = [
+  {key:'free',     name:'자유'},
+  {key:'crown',    name:'왕관'},
+  {key:'sunburst', name:'선버스트'},
+  {key:'cross',    name:'X 크로스'},
+  {key:'curtain',  name:'커튼'},
+  {key:'center',   name:'센터'},
+  {key:'wave',     name:'파도'},
+];
+let beamPattern = 'free', patternAuto = false, patternAt = 0;
+function beamDir(b, t, isB, i=0){
+  const nx = b.nx, s = Math.sign(nx)||1, a = Math.abs(nx), up = !!b.up, p = b.g.position;
+  const breathe = Math.sin(t*.8 + a*2)*.03;
+  switch(beamPattern){
+    case 'crown': {                                         // 왕관 — 업라이트 짝이 높낮이 다른 봉우리(Λ), 뒷줄은 위로 솟는 끝, 앞줄은 아래로 띠
+      if(up){ const pair = Math.floor(i/2), mate = uplights[i%2 ? i-1 : i+1].g.position;
+        const cx = (p.x + mate.x)/2, peakY = (pair%2 ? 470 : 360) + sig.beatPulse*20;
+        return [cx - p.x, peakY - p.y, -70 - p.z]; }
+      if(b.row) return [nx*.32 + (Math.round((nx+1)*4.5)%2 ? .08 : -.08), 1, -.12 + breathe];
+      return [breathe, -1, .18]; }
+    case 'sunburst':                                        // 선버스트 — 무대 뒤에서 하늘로 퍼지는 햇살
+      if(up) return [nx*.9, 1, -.35];
+      if(b.row) return [nx*1.25, 1, -.25 + breathe];
+      return [nx*.85, -1, .35];
+    case 'cross':                                           // X 크로스 — 좌우가 엇갈려 가운데서 교차
+      if(up) return [-nx*.95, 1, -.4];
+      return [-s*(.35 + a*.55), -1, b.row ? .45 : .2];
+    case 'curtain':                                         // 커튼 — 수직으로 내려오는 빛의 커튼
+      if(up) return [0, 1, -.08];
+      return [breathe*.5, -1, b.row ? .04 : .02];
+    case 'center': {                                        // 센터 — 모든 빔이 보컬 한 점으로
+      const tx = 0, ty = 24 + 50, tz = 40;
+      return [tx - p.x, ty - p.y, tz - p.z]; }
+    case 'wave': {                                          // 파도 — 왼쪽에서 오른쪽으로 차례로 기울어 물결
+      const w = Math.sin(t*3.2 - nx*4.5 + (b.row||0)*.6);
+      if(up) return [w*.55, 1, -.35];
+      return [w*.55, -1, b.row ? .45 : .22]; }
+    default: {                                              // 자유 — 부채꼴로 쓸기 (B 큐에선 가운데로 모임)
+      if(up) return [nx*.35 + s*Math.sin(t*1.1+a*3)*.15, 1, -.45];
+      const sweep = Math.sin(t*(isB?1.8:.9) + a*2.4 + (b.row||0)*1.1);
+      const rz = isB ? -nx*.12 + s*sweep*.08 : -nx*.45 + s*sweep*.32;
+      return [-Math.sin(rz), -1, ((b.row) ? .55 : .25) + Math.sin(t*.7+a*3)*.18]; }
+  }
+}
+// 무빙 — 앞 트러스 10대 · 뒤 트러스 10대 (좌우대칭으로 움직임)
+const movers = [];
+for(let row=0; row<2; row++) for(let i=0;i<10;i++){
+  const px = 70 + i*95.5, nx = (px-MID)/430;          // -1..1
+  const b = makeBeam(row ? 720 : 620, row ? 70 : 55);
+  b.g.position.set(X(px), Y(22)-10, row ? -176 : 24);
+  movers.push({...b, nx, row});
+}
+// 바닥 업라이트 — 무대 앞선 8대 (위로)
+const uplights = [];
+for(let i=0;i<8;i++){
+  const px = 120 + i*108.6, nx=(px-MID)/380;
+  const b = makeBeam(520, 40); b.g.position.set(X(px), Y(GROUND)+26, 40);
+  uplights.push({...b, nx, up:true});
+}
+// 좌우 도트 타워 (전구 포털 프레임은 뺌 — 2026-10-23 피드백)
+const bulbPos = [];
+[[-468],[468],[-448],[448]].forEach(([x])=>{ for(let y=Y(GROUND)+30; y<Y(40); y+=12) bulbPos.push([x, y, 34, 1]); });
+const bulbMesh = new THREE.InstancedMesh(new THREE.SphereGeometry(2.3,8,6), new THREE.MeshBasicMaterial({toneMapped:false}), bulbPos.length);
+{ const m = new THREE.Matrix4(); bulbPos.forEach((p,i)=>{ m.makeTranslation(p[0],p[1],p[2]); bulbMesh.setMatrixAt(i,m); bulbMesh.setColorAt(i,new THREE.Color(1,1,1)); }); }
+scene.add(bulbMesh);
+// 객석 응원봉
+const CROWD = 3600;
+const crowdGeo = new THREE.BufferGeometry();
+{ const p = new Float32Array(CROWD*3), c = new Float32Array(CROWD*3);
+  for(let i=0;i<CROWD;i++){
+    let x = (hash(i,1)-.5)*1500, z = 120 + hash(i,2)*1100;
+    if(Math.abs(x)<60 && z<420) x += x<0 ? -70 : 70;          // 런웨이 자리 비움
+    p[i*3]=x; p[i*3+1]=-24+18+hash(i,3)*10; p[i*3+2]=z;
+    const v = .5+hash(i,4)*.5; c[i*3]=c[i*3+1]=c[i*3+2]=v;
+  }
+  crowdGeo.setAttribute('position', new THREE.BufferAttribute(p,3));
+  crowdGeo.setAttribute('color', new THREE.BufferAttribute(c,3)); }
+const crowdMat = new THREE.PointsMaterial({size:4.5, vertexColors:true, transparent:true, opacity:.9, toneMapped:false, depthWrite:false});
+const crowdPts = new THREE.Points(crowdGeo, crowdMat); scene.add(crowdPts);
+// 안개
+const fogTex = (()=>{ const c=document.createElement('canvas'); c.width=c.height=128; const x=c.getContext('2d');
+  const g=x.createRadialGradient(64,64,0,64,64,64); g.addColorStop(0,'rgba(255,255,255,.9)'); g.addColorStop(1,'rgba(255,255,255,0)');
+  x.fillStyle=g; x.fillRect(0,0,128,128); return new THREE.CanvasTexture(c); })();
+const fogs = [[-380,60,-40,600],[380,60,-40,600],[0,140,-120,800],[-200,20,60,500],[200,20,60,500]].map(([x,y,z,s])=>{
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({map:fogTex, transparent:true, opacity:.12, depthWrite:false, blending:THREE.AdditiveBlending}));
+  sp.position.set(x,y,z); sp.scale.set(s,s*.5,1); scene.add(sp); return sp; });
+
+/* ───────── 밴드 (4인조 — 기타 · 보컬 · 베이스 · 드럼) ─────────
+   사람 비율 7.5등신 — 관절 좌표(키 h 기준)로 뼈대를 세우고, 매 프레임 자세를 갱신한다.
+   x = 인물의 오른쪽(+) · y = 위 · z = 객석 쪽(+) */
+const darkMat = new THREE.MeshStandardMaterial({color:0x0d0f14, roughness:.55, metalness:.3});
+const _up = new THREE.Vector3(0,1,0), _d = new THREE.Vector3(), _a = new THREE.Vector3(), _b = new THREE.Vector3();
+function bone(parent, r0, r1, flat){                      // 두 관절 사이 원기둥 (r0 = 시작쪽 굵기)
+  const pivot = new THREE.Group();
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(r1, r0, 1, 12), darkMat);
+  if(flat) m.scale.set(flat[0], 1, flat[1]);
+  pivot.add(m); parent.add(pivot);
+  return { set(a, b){ pivot.position.copy(a); _d.subVectors(b, a); const L = _d.length();
+    m.scale.y = L; m.position.y = L/2; pivot.quaternion.setFromUnitVectors(_up, _d.normalize()); } };
+}
+function ball(parent, r, sy=1, sz=1){ const m = new THREE.Mesh(new THREE.SphereGeometry(r, 14, 10), darkMat); m.scale.set(1,sy,sz); parent.add(m); return m; }
+function figure(h, pose){
+  const g = new THREE.Group();
+  const B = {
+    torso: bone(g, .068*h, .09*h, [1.22,.62]), neck: bone(g, .026*h, .024*h),
+    lUA: bone(g, .03*h, .025*h), lFA: bone(g, .024*h, .019*h), rUA: bone(g, .03*h, .025*h), rFA: bone(g, .024*h, .019*h),
+    lTh: bone(g, .05*h, .036*h), lSh: bone(g, .034*h, .025*h), rTh: bone(g, .05*h, .036*h), rSh: bone(g, .034*h, .025*h),
+  };
+  const head = ball(g, .06*h, 1.18, 1.05), pelvis = ball(g, .072*h, .75, .62);
+  const J = {}; ['lSh','rSh','lEl','rEl','lWr','rWr','lKn','rKn'].forEach(k=>J[k]=ball(g, k.endsWith('Wr') ? .024*h : .03*h));
+  const feet = [0,1].map(()=>{ const f=new THREE.Mesh(new THREE.BoxGeometry(.055*h,.035*h,.13*h), darkMat); g.add(f); return f; });
+  const V = a => new THREE.Vector3(a[0]*h, a[1]*h, a[2]*h);
+  const props = new THREE.Group(); g.add(props);
+  return { g, props, update(t){
+    const P = pose(t), v = {}; for(const k in P) v[k] = V(P[k]);
+    B.torso.set(v.pelvis.clone().add(_a.set(0,.03*h,0)), v.neck);
+    B.neck.set(v.neck, v.head.clone().add(_b.set(0,-.05*h,0)));
+    head.position.copy(v.head); pelvis.position.copy(v.pelvis);
+    B.lUA.set(v.lSh, v.lEl); B.lFA.set(v.lEl, v.lWr); B.rUA.set(v.rSh, v.rEl); B.rFA.set(v.rEl, v.rWr);
+    B.lTh.set(v.lHip, v.lKn); B.lSh.set(v.lKn, v.lAn); B.rTh.set(v.rHip, v.rKn); B.rSh.set(v.rKn, v.rAn);
+    for(const k in J) J[k].position.copy(v[k]);
+    feet[0].position.copy(v.lAn).add(_a.set(0,-.01*h,.04*h)); feet[1].position.copy(v.rAn).add(_a.set(0,-.01*h,.04*h));
+    if(P.after) P.after(v);
+  }};
+}
+const STAND = { pelvis:[0,.52,0], neck:[0,.835,0], head:[0,.925,.01], lSh:[-.112,.815,0], rSh:[.112,.815,0],
+  lHip:[-.056,.5,0], rHip:[.056,.5,0], lKn:[-.075,.27,.025], rKn:[.075,.27,.025], lAn:[-.09,.04,0], rAn:[.09,.04,0] };
+const bounce = () => sig.beatPulse*.012;
+// 기타 — 왼손 넥, 오른손 스트로크 (드럼에 맞춰)
+function guitarPose(ph){ return t=>{ const b=bounce(), st=Math.sin(t*14+ph)*sig.drums*.05;
+  const P = {...STAND}; for(const k of ['pelvis','neck','head','lSh','rSh','lHip','rHip']) P[k]=[P[k][0],P[k][1]-b,P[k][2]];
+  P.lKn=[-.08,.27-b*.5,.04+b]; P.rKn=[.08,.27-b*.5,.04+b];
+  P.head=[0,.92-b,.02+sig.drums*.012];
+  return {...P, lEl:[-.2,.64,.08], lWr:[-.31,.69,.15], rEl:[.17,.62,.05], rWr:[.06,.53+st,.15]}; }; }
+// 보컬 — 오른손 마이크, 왼팔은 보컬 세기만큼 올라감
+function vocalPose(t){ const b=bounce(), up=sig.vocal;
+  const P = {...STAND}; for(const k of ['pelvis','neck','head','lSh','rSh','lHip','rHip']) P[k]=[P[k][0],P[k][1]-b,P[k][2]];
+  return {...P, rEl:[.15,.67,.09], rWr:[.04,.86,.12], lEl:[-.19,.66+up*.12,.05], lWr:[-.26,.52+up*.42,.1+up*.05]}; }
+// 드럼 — 앉은 자세, 박마다 좌우 번갈아 내려침
+function drumPose(t){ const beat=sig.beatCount%2, hitL=beat?sig.beatPulse:0, hitR=beat?0:sig.beatPulse;
+  return { pelvis:[0,.3,0], neck:[0,.6,.02], head:[0,.69,.04], lSh:[-.11,.585,.01], rSh:[.11,.585,.01],
+    lHip:[-.06,.3,.0], rHip:[.06,.3,0], lKn:[-.1,.31,.2], rKn:[.1,.31,.2], lAn:[-.11,.04,.23], rAn:[.11,.04,.23],
+    lEl:[-.18,.46,.1], rEl:[.18,.46,.1], lWr:[-.11,.42+(1-hitL)*.1*sig.drums+.02,.24], rWr:[.11,.42+(1-hitR)*.1*sig.drums+.02,.24] }; }
+
+const HB = 66;                                            // 서 있는 사람 키
+const band = [];
+function addGuitarist(px, pz, ph, mirrorX){
+  const f = figure(HB, guitarPose(ph));
+  const gb = new THREE.Mesh(new THREE.BoxGeometry(.27*HB,.2*HB,.05*HB), darkMat);   // 몸통
+  gb.position.set(.02*HB,.5*HB,.13*HB); gb.rotation.z = .38; f.props.add(gb);
+  const nk = new THREE.Mesh(new THREE.BoxGeometry(.36*HB,.025*HB,.02*HB), darkMat); // 넥
+  nk.position.set(-.2*HB,.63*HB,.15*HB); nk.rotation.z = .38; f.props.add(nk);
+  f.g.position.set(X(px), 24, pz); if(mirrorX) f.g.scale.x = -1;
+  scene.add(f.g); band.push(f);
+}
+addGuitarist(330, 10, 0, false);
+addGuitarist(670, 10, 1.7, true);                          // 베이스 (거울상 — 콘서트 대칭)
+{ const f = figure(HB, vocalPose);
+  const mic = new THREE.Mesh(new THREE.CylinderGeometry(.012*HB,.02*HB,.1*HB,8), darkMat); f.props.add(mic);
+  const upd = f.update; f.update = t=>{ upd(t); const w = vocalPose(t).rWr; mic.position.set(w[0]*HB-.01*HB, w[1]*HB+.04*HB, w[2]*HB+.01*HB); mic.rotation.x = -.5; };
+  f.g.position.set(0, 24, 40); scene.add(f.g); band.push(f); }
+const kit = new THREE.Group();
+{ const cyl=(r,h,x,y,z,rx=0,rz=0)=>{ const m=new THREE.Mesh(new THREE.CylinderGeometry(r,r,h,22), darkMat); m.position.set(x,y,z); m.rotation.set(rx,0,rz); kit.add(m); return m; };
+  const stand=(x,z,y1)=>cyl(.5,y1,x,y1/2,z);
+  cyl(6,1.5,0,18,-20); stand(0,-20,18);                    // 스툴
+  cyl(10,13,0,10,4,Math.PI/2);                             // 킥
+  cyl(6.5,5,-5,25,-6); stand(-5,-6,23);                    // 스네어
+  cyl(5.5,6,-8,33,2,.3); cyl(5.5,6,8,33,2,.3);             // 랙탐
+  cyl(8,11,17,13,-10); stand(17,-10,8);                    // 플로어탐
+  cyl(7,.6,-17,31,-10); stand(-17,-10,31);                 // 하이햇
+  cyl(12,.6,-22,47,2,.25,.15); stand(-22,2,46);            // 크래시
+  cyl(13,.6,24,44,-2,.2,-.15); stand(24,-2,43);            // 라이드
+  const d = figure(HB, drumPose); d.g.position.set(0,0,-20); kit.add(d.g); band.push(d);
+  const sticks = [0,1].map(()=>{ const m=new THREE.Mesh(new THREE.CylinderGeometry(.3,.3,16,6), darkMat); kit.add(m); return m; });
+  const upd = d.update; d.update = t=>{ upd(t); const P = drumPose(t);
+    [P.lWr,P.rWr].forEach((w,i)=>{ sticks[i].position.set(w[0]*HB, w[1]*HB-2, -20+w[2]*HB+6); sticks[i].rotation.set(1.1,0,(i?-1:1)*.25); }); };
+}
+kit.position.set(0, 24+26, -40); scene.add(kit);
+const cymbals = kit.children.filter(m=>m.geometry && m.geometry.parameters && m.geometry.parameters.height===.6);
+
+/* ───────── 시점 ───────── */
+const VIEWS = {
+  front: {pos:[0,240,1600],    tgt:[0,205,-40]},
+  house: {pos:[0,170,1950],    tgt:[0,200,-40]},
+  side:  {pos:[-900,300,1050], tgt:[60,190,-40]},
+  top:   {pos:[0,1300,1100],   tgt:[0,80,80]},
+};
+let camAnim = null;
+function goView(name){
+  const v = VIEWS[name]; if(!v) return;
+  if(typeof stopShot==='function') stopShot();
+  camAnim = {t:0, p0:camera.position.clone(), t0:controls.target.clone(),
+             p1:new THREE.Vector3(...v.pos), t1:new THREE.Vector3(...v.tgt)};
+  document.querySelectorAll('[data-view]').forEach(b=>b.classList.toggle('on', b.dataset.view===name));
+}
+camera.position.set(...VIEWS.house.pos); controls.target.set(...VIEWS.house.tgt);
+document.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>goView(b.dataset.view));
+controls.addEventListener('start', ()=>{ camAnim=null; document.querySelectorAll('[data-view]').forEach(b=>b.classList.remove('on')); });
+function setOrbit(on){ if(on && typeof stopShot==='function') stopShot(); controls.autoRotate = on; controls.autoRotateSpeed = .45;
+  document.getElementById('btnOrbit').classList.toggle('on', on); }
+document.getElementById('btnOrbit').onclick = ()=>setOrbit(!controls.autoRotate);
+
+/* ───────── 카메라 무빙 (방송 카메라 샷) ─────────
+   각 샷 = 진행도 u(0→1)에 따른 카메라 위치·바라보는 점·화각. 단위는 무대 좌표 (사람 키 ≈ 64).
+   「카메라 연출」을 켜면 샷을 이어 붙이고, 컷은 다음 박에 맞춰 넘어간다. 마우스로 끌면 멈춘다. */
+const lerp = (a,b,u)=>a+(b-a)*u;
+const ease = x => x<.5 ? 2*x*x : 1-Math.pow(-2*x+2,2)/2;
+const STAGE_C = [0,170,-40], VOCAL = [0,24+56,30];
+const SHOTS = {
+  drone: {dur:16, fov:42, beam:.7, f:u=>{ const a=-1.0+1.7*u, R=1700-750*ease(u);            // 객석 뒤 낮게 → 응원봉 위로 솟아 무대 위로
+    return {pos:[Math.sin(a)*R, 120+680*u, -40+Math.cos(a)*R], tgt:[0, 190-90*u, -40]}; }},
+  crane: {dur:12, fov:38, beam:.45, bloom:.5, f:u=>{ const x=lerp(-760,760,ease(u));                       // 지미집: 왼쪽 낮게 → 위로 휘었다 → 오른쪽 낮게
+    return {pos:[x, 40+460*Math.sin(Math.PI*u), 640-120*Math.sin(Math.PI*u)], tgt:[x*.18, 190, -40]}; }},
+  dolly: {dur:10, fov:36, beam:.5, bloom:.45, f:u=>{ const k=ease(u);                                       // 런웨이를 따라 보컬에게 다가감
+    return {pos:[Math.sin(u*3)*20, lerp(110,64,k), lerp(1150,170,k)], tgt:[0, lerp(170,92,k), lerp(-60,0,k)]}; }},
+  pov:   {dur:12, fov:55, shake:1, f:u=>({pos:[lerp(-170,-120,u), 40, 560], tgt:[lerp(-30,40,u), 160, -40]})},  // 객석 한가운데 눈높이
+  close: {dur:12, fov:32, f:u=>{ const a=-.95+1.9*u, r=150;                              // 보컬 주위를 반 바퀴
+    return {pos:[VOCAL[0]+Math.sin(a)*r, VOCAL[1]+12+18*Math.sin(u*Math.PI), VOCAL[2]+Math.cos(a)*r], tgt:[VOCAL[0], VOCAL[1]+6, VOCAL[2]]}; }},
+  back:  {dur:10, fov:48, f:u=>({pos:[lerp(110,-110,u), 120, -250], tgt:[lerp(-260,260,u), 40, 900]})},  // 드럼 뒤에서 객석을 내다봄
+};
+const DIRECTOR_ORDER = ['drone','dolly','pov','close','crane','back'];
+let shot = null, director = false, beamGain = 1;                       // shot = {name, t0}
+function playShot(name, keepDirector){
+  shot = {name, t0:performance.now()/1000};
+  camAnim = null; controls.autoRotate = false; document.getElementById('btnOrbit').classList.remove('on');
+  if(!keepDirector) setDirector(false);
+  document.querySelectorAll('[data-shot]').forEach(b=>b.classList.toggle('on', b.dataset.shot===name));
+  document.querySelectorAll('[data-view]').forEach(b=>b.classList.remove('on'));
+}
+function stopShot(){
+  if(!shot) return;
+  shot = null; setDirector(false); beamGain = 1; bloom.strength = .75;
+  camera.fov = 35; camera.updateProjectionMatrix();
+  document.querySelectorAll('[data-shot]').forEach(b=>b.classList.remove('on'));
+}
+function setDirector(on){
+  director = on;
+  document.getElementById('btnDirector').classList.toggle('on', on);
+  if(on && !shot) playShot(DIRECTOR_ORDER[0], true);
+}
+let pendingCut = null;
+function updateShot(t, dt){
+  if(!shot) return;
+  const S = SHOTS[shot.name];
+  let u = (t - shot.t0)/S.dur;
+  if(u >= 1){
+    if(director){                                          // 다음 박에서 컷
+      if(!pendingCut){ const i = DIRECTOR_ORDER.indexOf(shot.name); pendingCut = DIRECTOR_ORDER[(i+1)%DIRECTOR_ORDER.length]; }
+    } else { shot.t0 = t; u = 0; }                          // 단일 샷은 반복
+    u = Math.min(u, 1.08);
+  }
+  const {pos, tgt} = S.f(Math.min(u,1) + Math.max(0,u-1));
+  let px=pos[0], py=pos[1], pz=pos[2], tx=tgt[0], ty=tgt[1], tz=tgt[2];
+  if(S.shake){                                              // 손에 든 폰 — 흔들림 + 박자에 들썩
+    px += (noise2(t*1.3,1)-.5)*14; py += (noise2(t*1.1,2)-.5)*8 + sig.beatPulse*5;
+    tx += (noise2(t*.9,3)-.5)*30;  ty += (noise2(t*1.2,4)-.5)*18;
+  }
+  camera.position.set(px,py,pz); controls.target.set(tx,ty,tz); camera.lookAt(tx,ty,tz);
+  if(camera.fov !== S.fov){ camera.fov = S.fov; camera.updateProjectionMatrix(); }
+  beamGain += ((S.beam ?? 1) - beamGain) * Math.min(1, dt*3);
+  bloom.strength += ((S.bloom ?? .75) - bloom.strength) * Math.min(1, dt*3);
+}
+function onBeatCut(){ if(pendingCut){ const n = pendingCut; pendingCut = null; playShot(n, true); } }
+document.querySelectorAll('[data-shot]').forEach(b=>b.onclick=()=>playShot(b.dataset.shot));
+document.getElementById('tgCity').onclick = ()=>setCity(!cityOn);
+function toggleGroup(id, objs){ const b=document.getElementById(id); b.onclick=()=>{ const on=!b.classList.contains('on'); b.classList.toggle('on', on); objs().forEach(o=>o.visible=on); }; }
+toggleGroup('tgMovers', ()=>[...movers.map(m=>m.g), ...uplights.map(u=>u.g)]);
+toggleGroup('tgBulbs', ()=>[bulbMesh]);
+toggleGroup('tgCrowd', ()=>[crowdPts]);
+document.getElementById('btnDirector').onclick = ()=>{ if(director) stopShot(); else setDirector(true); };
+controls.addEventListener('start', stopShot);
+
+function resize(){
+  const r = mainEl.getBoundingClientRect();
+  if(!r.width || !r.height) return;
+  renderer.setSize(r.width, r.height, false);
+  composer.setSize(r.width, r.height);
+  camera.aspect = r.width/r.height; camera.updateProjectionMatrix();
+}
+new ResizeObserver(resize).observe(mainEl);
+
+/* ───────── 왼쪽 패널 ───────── */
+const BARS = [['ave','rms'],['Drums','drums'],['Bass','bass'],['Vocal','vocal'],['Other','other'],['Low','low'],['High','hi']];
+const barsEl = document.getElementById('bars');
+const barEls = BARS.map(([label,key])=>{
+  const row = document.createElement('div'); row.className='bar';
+  row.innerHTML = `<span>${label}</span><div class="track"><div class="fill"></div><div class="peak"></div></div><span class="num">0.00</span>`;
+  barsEl.appendChild(row);
+  return {row, key, fill:row.querySelector('.fill'), peak:row.querySelector('.peak'), num:row.querySelector('.num')};
+});
+const cueBtns = [];
+SONGS.forEach((s,si)=>['A','B'].forEach(v=>{
+  const b = document.createElement('button'); b.className='cue';
+  b.innerHTML = `<span>${si+1} ${s.name} ${v}</span><small>${s.driver[v]}</small>`;
+  b.onclick = ()=>setCue(si,v);
+  document.getElementById('cuelist').appendChild(b); cueBtns.push({b,si,v});
+}));
+function renderCueUI(){
+  const s = SONGS[cur.song];
+  document.getElementById('cueTitle').innerHTML = `<b>${cur.song+1}</b>${s.name} ${cur.v}`;
+  document.getElementById('drvName').textContent = s.driver[cur.v];
+  cueBtns.forEach(o=>o.b.classList.toggle('on', o.si===cur.song && o.v===cur.v));
+}
+renderCueUI();
+let midiName = '없음';
+function updatePanel(fps){
+  const drv = SONGS[cur.song].driver[cur.v];
+  document.getElementById('drvVal').textContent = sig[drv].toFixed(2);
+  barEls.forEach(o=>{
+    o.fill.style.width = (sig[o.key]*100).toFixed(1)+'%';
+    o.peak.style.left = (peakHold[o.key]*100).toFixed(1)+'%';
+    o.num.textContent = sig[o.key].toFixed(2);
+    o.row.classList.toggle('drv', o.key===drv);
+  });
+  const live = isLive();
+  document.getElementById('status').innerHTML =
+    `<span class="led ${live?'ok':'warn'}"></span><b>${live?'LIVE · resona':'DEMO'}</b>${forceDemo?' (고정)':''}<br>`+
+    `WS ${WS_URL} — ${wsState}<br>`+
+    `BPM ${sig.bpm? sig.bpm.toFixed(0):'—'} · 박 ${sig.beatInBar|0} · ${fps|0} fps<br>`+
+    `MIDI ${midiName}${autoCycle?' · 큐 자동':''}${crowdMode==='auto' ? '<br>응원봉 오토 · '+CROWD_SHOWS[Math.floor(sig.beatCount/32)%CROWD_SHOWS.length] : ''}`;
+}
+
+/* ───────── 응원봉 컬러 휠 ─────────
+   휠을 누르거나 끌면 그 색으로, 「곡 색 따라」를 누르면 다시 곡 색을 따라감 */
+let crowdPick = null, crowdMode = 'song';                 // song = 곡 색 · pick = 휠 · auto = 응원봉 연출
+function colorWheel(id, onPick){                               // 컬러 휠 — 각도 = 색상 · 반지름 = 채도
+  const wc = document.getElementById(id), wx = wc.getContext('2d'), R0 = wc.width/2;
+  const img = wx.createImageData(wc.width, wc.height);
+  for(let y=0;y<wc.height;y++) for(let x=0;x<wc.width;x++){
+    const dx=x-R0, dy=y-R0, r=Math.hypot(dx,dy)/R0, i=(y*wc.width+x)*4;
+    if(r>1){ img.data[i+3]=0; continue; }
+    const c = new THREE.Color().setHSL(((Math.atan2(dy,dx)/(Math.PI*2))+1)%1, Math.min(1,r), .5+.5*(1-Math.min(1,r))*.6);
+    img.data[i]=c.r*255; img.data[i+1]=c.g*255; img.data[i+2]=c.b*255; img.data[i+3]=255; }
+  wx.putImageData(img,0,0);
+  const pick = e=>{ const b=wc.getBoundingClientRect(), x=(e.clientX-b.left)/b.width*wc.width-R0, y=(e.clientY-b.top)/b.height*wc.height-R0;
+    const r=Math.min(1, Math.hypot(x,y)/R0);
+    onPick(new THREE.Color().setHSL(((Math.atan2(y,x)/(Math.PI*2))+1)%1, r, .5+.5*(1-r)*.6)); };
+  let down=false;
+  wc.addEventListener('pointerdown', e=>{ down=true; wc.setPointerCapture(e.pointerId); pick(e); });
+  wc.addEventListener('pointermove', e=>{ if(down) pick(e); });
+  wc.addEventListener('pointerup', ()=>{ down=false; });
+}
+// 무빙 3그룹 — 앞 트러스(row 0) · 뒤 트러스(row 1) · 바닥 업라이트. 그룹마다 색(휠 / 곡 색)과 조도
+const LGROUP = {front:{pick:null, dim:1}, back:{pick:null, dim:1}, floor:{pick:null, dim:1}};
+Object.keys(LGROUP).forEach(k=>{
+  const G = LGROUP[k];
+  colorWheel('wheel_'+k, c=>{ G.pick = c; document.getElementById('swatch_'+k).style.background = '#'+c.getHexString(); document.getElementById('auto_'+k).classList.remove('on'); });
+  document.getElementById('auto_'+k).onclick = ()=>{ G.pick = null; document.getElementById('auto_'+k).classList.add('on'); };
+  const sl = document.getElementById('dim_'+k);
+  sl.addEventListener('input', ()=>{ G.dim = sl.value/100; document.getElementById('dimv_'+k).textContent = sl.value; });
+});
+const groupColor = (k, sp)=>{ const p = LGROUP[k].pick; return p ? [p.r, p.g, p.b] : sp; };
+{ colorWheel('wheel', c=>{ crowdPick = c; document.getElementById('crowdSwatch').style.background = '#'+c.getHexString(); setCrowdMode('pick'); });
+  document.getElementById('btnCrowdAuto').onclick = ()=>{ crowdPick=null; setCrowdMode('song'); };
+  document.getElementById('btnCrowdShow').onclick = ()=>setCrowdMode(crowdMode==='auto' ? 'song' : 'auto');
+}
+
+/* 응원봉 오토 — 중앙 제어 응원봉처럼 객석 전체가 패턴으로 움직임. 32박마다 다음 패턴 */
+const crowdPos = crowdGeo.attributes.position.array, crowdCol = crowdGeo.attributes.color.array;
+const crowdBase = Float32Array.from(crowdCol);
+const CROWD_SHOWS = ['색 파도', '무대에서 퍼지는 링', '좌우 교차', '반짝임'];
+const _cc = new THREE.Color();
+function setCrowdMode(m){
+  if(crowdMode==='auto' && m!=='auto'){ crowdCol.set(crowdBase); crowdGeo.attributes.color.needsUpdate = true; }
+  crowdMode = m;
+  document.getElementById('btnCrowdAuto').classList.toggle('on', m==='song');
+  document.getElementById('btnCrowdShow').classList.toggle('on', m==='auto');
+}
+function updateCrowdShow(t, sp){
+  const show = Math.floor(sig.beatCount/32) % CROWD_SHOWS.length, bp = sig.beatPulse;
+  crowdMat.color.setScalar(1.35);
+  const baseHue = new THREE.Color(...sp).getHSL({}).h;
+  for(let i=0;i<CROWD;i++){
+    const x = crowdPos[i*3], z = crowdPos[i*3+2], b = crowdBase[i*3];
+    let h, l = .5, k = 1;
+    if(show===0){ h = (x/1500 + t*.12) % 1; k = .7 + .3*Math.sin(x*.01 - t*3); }                         // 색 파도 — 왼쪽→오른쪽
+    else if(show===1){ const d = Math.hypot(x, z-60); const ring = Math.sin(d*.02 - t*4);                // 링 — 무대에서 객석으로
+      h = (baseHue + (ring>0 ? 0 : .5)) % 1; k = ring>.3 ? 1 : .35; }
+    else if(show===2){ const side = (x<0) === (sig.beatCount%2===0);                                      // 좌우 교차 — 박마다
+      h = side ? baseHue : (baseHue+.5)%1; k = side ? .6 + bp*.6 : .25; }
+    else { const tw = hash(i, Math.floor(t*6)); h = [baseHue, (baseHue+.33)%1, (baseHue+.66)%1][Math.floor(hash(i,7)*3)];  // 반짝임
+      k = tw > .85 ? 1.4 : .35; l = tw > .85 ? .65 : .5; }
+    _cc.setHSL(h, 1, l).multiplyScalar(k * (.6 + b*.5) * (1 + bp*.35));
+    crowdCol[i*3] = _cc.r; crowdCol[i*3+1] = _cc.g; crowdCol[i*3+2] = _cc.b;
+  }
+  crowdGeo.attributes.color.needsUpdate = true;
+  if(panelAcc===0) document.getElementById('crowdSwatch').style.background = `linear-gradient(90deg, hsl(${baseHue*360},100%,55%), hsl(${(baseHue*360+180)%360},100%,55%))`;
+}
+
+document.getElementById('tgPoster').onclick = e=>{ surfPoster=!surfPoster; e.currentTarget.classList.toggle('on', surfPoster); };
+document.getElementById('tgEQ').onclick = e=>{ surfEQ=!surfEQ; e.currentTarget.classList.toggle('on', surfEQ); };
+document.querySelectorAll('[data-surf]').forEach(b=>b.onclick=()=>{ surfMode=b.dataset.surf;
+  document.querySelectorAll('[data-surf]').forEach(o=>o.classList.toggle('on', o===b)); });
+
+{ const sl = document.getElementById('edgeSlider');                 // 빔 엣지 슬라이더 — 소프트일수록 빔 폭도 넓어짐
+  const apply = ()=>{ const v = sl.value/100; beamEdge.value = v;
+    const w = .75 + v*.6; beamCones.forEach(c=>c.scale.set(w,1,w));
+    document.getElementById('edgeLabel').textContent = `빔 엣지 ${sl.value} — ${v<.34?'하드':v<.67?'중간':'소프트'}`; };
+  sl.addEventListener('input', apply); apply(); }
+
+{ const row = document.getElementById('patternRow');                 // 무빙 패턴 버튼
+  BEAM_PATTERNS.forEach(pt=>{ const btn=document.createElement('button'); btn.className='btn'+(pt.key===beamPattern?' on':''); btn.textContent=pt.name; btn.dataset.pat=pt.key;
+    btn.onclick=()=>setPattern(pt.key); row.appendChild(btn); });
+  document.getElementById('btnPatternAuto').onclick = e=>{ patternAuto=!patternAuto; patternAt=sig.beatCount; e.currentTarget.classList.toggle('on', patternAuto); };
+}
+function setPattern(k){ beamPattern = k; document.querySelectorAll('[data-pat]').forEach(b=>b.classList.toggle('on', b.dataset.pat===k)); }
+
+document.getElementById('tgScreens').onclick = e=>{ screensOn = !screensOn; e.currentTarget.classList.toggle('on', screensOn);
+  screenMeshes.forEach(m=>m.material.color.setScalar(screensOn ? 1 : .03)); };          // 꺼진 LED 패널 (검게)
+document.getElementById('tgBloom').onclick = e=>{ bloom.enabled = !bloom.enabled; e.currentTarget.classList.toggle('on', bloom.enabled); };
+document.getElementById('tgBeat').onclick = e=>{ beatFx = !beatFx; e.currentTarget.classList.toggle('on', beatFx); };
+
+/* ───────── 레조나 출력 1~4 → 스크린 ─────────
+   1 = 중앙 · 2 = 왼쪽 · 3 = 오른쪽 · 4 = 앞 띠. 줄마다 기본 / 화면 공유 / 캡처 장치 중 고름 */
+const OUTS = [['center','1 · 중앙'], ['left','2 · 왼쪽'], ['right','3 · 오른쪽'], ['strip','4 · 앞 띠']];
+// 레조나 출력 권장 해상도 — 스크린 비율 그대로 (다르면 늘려서 맞춰져 찌그러짐)
+const OUT_SIZE = {center:[1920,1270], left:[1440,1105], right:[1440,1105], strip:[3800,76]};
+const panelIn = {};
+let videoDevices = [];
+function stopPanel(key){ const pin = panelIn[key]; if(!pin) return;
+  if(pin.stream) pin.stream.getTracks().forEach(t=>t.stop());
+  if(pin.url){ pin.video.pause(); URL.revokeObjectURL(pin.url); }
+  pin.video.srcObject = null; delete panelIn[key]; if(typeof updateKnobs==='function') updateKnobs();
+  document.getElementById('dot_'+key).classList.remove('on'); }
+function setPanelStream(key, stream){
+  stopPanel(key);
+  const v = document.createElement('video'); v.muted = true; v.playsInline = true; v.srcObject = stream;
+  const pin = panelIn[key] = {video:v, stream, ready:false};
+  v.addEventListener('loadeddata', ()=>{ pin.ready = true; document.getElementById('dot_'+key).classList.add('on');
+    const [W,H] = OUT_SIZE[key], got = v.videoWidth/v.videoHeight, want = W/H;          // 들어온 해상도·비율 확인
+    document.getElementById('outNote').textContent = `${key} 입력 ${v.videoWidth}×${v.videoHeight}` +
+      (Math.abs(got-want)/want > .1 ? ` · 비율이 달라 찌그러짐 (권장 ${W}×${H})` : ' · 비율 맞음'); });
+  v.play().catch(()=>{});
+  stream.getVideoTracks()[0].addEventListener('ended', ()=>{ if(panelIn[key]===pin){ stopPanel(key); document.getElementById('out_'+key).value='default'; } });
+}
+function fillOutOptions(sel){
+  const cur = sel.value;
+  sel.innerHTML = '<option value="default">기본 (그림·영상)</option>' + (sel.id!=='out_strip' ? '<option value="file">영상 파일 불러오기…</option>' : '') + '<option value="screen">화면 공유로 받기…</option>'
+    + (videoDevices.length ? videoDevices.map(d=>`<option value="dev:${d.deviceId}">캡처 · ${d.label||'비디오 장치'}</option>`).join('')
+                           : '<option value="list">캡처 장치 목록 불러오기…</option>');
+  if([...sel.options].some(o=>o.value===cur)) sel.value = cur;
+}
+async function loadDeviceList(){
+  const tmp = await navigator.mediaDevices.getUserMedia({video:true, audio:false});   // 권한을 받아야 장치 이름이 보임
+  tmp.getTracks().forEach(t=>t.stop());
+  videoDevices = (await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='videoinput');
+  OUTS.forEach(([k])=>fillOutOptions(document.getElementById('out_'+k)));
+}
+// 스크린별 영상 파일 (메인 3면) + 루프 속도
+const PANEL_RATE = {center:1, left:1, right:1};
+function setPanelFile(key, file){
+  stopPanel(key);
+  const v = document.createElement('video'); v.muted = true; v.loop = true; v.playsInline = true;
+  const url = URL.createObjectURL(file); v.src = url;
+  const pin = panelIn[key] = {video:v, stream:null, url, ready:false, file:true};
+  v.addEventListener('loadeddata', ()=>{ pin.ready = true; v.playbackRate = PANEL_RATE[key]; document.getElementById('dot_'+key).classList.add('on'); updateKnobs(); });
+  v.play().catch(()=>{});
+}
+function pickPanelFile(key, label, sel){
+  const fi = document.getElementById('panelFile');
+  fi.onchange = e=>{ const f = e.target.files[0]; fi.value = '';
+    if(f){ setPanelFile(key, f); document.getElementById('outNote').textContent = `${label} ← ${f.name} (루프)`; }
+    else if(!panelIn[key]) sel.value = 'default'; };
+  fi.click();
+}
+{ const box = document.getElementById('outRows');
+  OUTS.forEach(([key, label])=>{
+    const row = document.createElement('div'); row.className = 'outrow';
+    row.innerHTML = `<span>${label}<br><small>${OUT_SIZE[key].join('×')}</small></span><select id="out_${key}"></select><i id="dot_${key}"></i>`;
+    box.appendChild(row);
+    const sel = row.querySelector('select'); fillOutOptions(sel);
+    sel.onchange = async ()=>{
+      const v = sel.value, note = document.getElementById('outNote');
+      try{
+        if(v==='default'){ stopPanel(key); }
+        else if(v==='file'){ pickPanelFile(key, label, sel); }
+        else if(v==='screen'){ const st = await navigator.mediaDevices.getDisplayMedia({video:{frameRate:30}, audio:false}); setPanelStream(key, st); note.textContent = `${label} ← ${st.getVideoTracks()[0].label||'화면 공유'}`; }
+        else if(v==='list'){ await loadDeviceList(); sel.value = 'default'; note.textContent = `캡처 장치 ${videoDevices.length}개 — 줄마다 골라 주세요`; }
+        else if(v.startsWith('dev:')){ const st = await navigator.mediaDevices.getUserMedia({video:{deviceId:{exact:v.slice(4)}, width:1920, height:1080}, audio:false}); setPanelStream(key, st); note.textContent = `${label} ← ${st.getVideoTracks()[0].label}`; }
+      }catch(e){ sel.value = panelIn[key] ? sel.value : 'default'; note.textContent = '입력을 못 열었어요 — 취소했거나 권한이 막혔어요 (시작.command 로 연 로컬 버전에서만 됨)'; }
+    };
+  });
+}
+
+// 루프 속도 노브 — 위로 끌면 빠르게, 아래로 끌면 느리게 (0.1×~4×) · 더블클릭 = 1×
+function updateKnobs(){
+  ['center','left','right'].forEach(k=>{ const d = document.getElementById('dial_'+k); if(!d) return;
+    const r = PANEL_RATE[k], rot = Math.log(r)/Math.log(4) * 135;            // 1× = 12시, 4× = +135°, 0.25× = −135°
+    d.style.setProperty('--rot', rot+'deg');
+    document.getElementById('rate_'+k).textContent = r.toFixed(2)+'×';
+    const pin = panelIn[k]; d.classList.toggle('dim', !(pin && pin.file));
+    if(pin && pin.file) pin.video.playbackRate = r; });
+}
+{ const row = document.getElementById('knobRow');
+  [['center','중앙'],['left','왼쪽'],['right','오른쪽']].forEach(([k,label])=>{
+    const el = document.createElement('div'); el.className = 'knob';
+    el.innerHTML = `<div class="dial" id="dial_${k}" title="위아래로 끌기 · 더블클릭 = 1×"></div><b id="rate_${k}">1.00×</b><span>${label} 속도</span>`;
+    row.appendChild(el);
+    const d = el.querySelector('.dial'); let y0 = 0, r0 = 1, down = false;
+    d.addEventListener('pointerdown', e=>{ down = true; y0 = e.clientY; r0 = PANEL_RATE[k]; d.setPointerCapture(e.pointerId); });
+    d.addEventListener('pointermove', e=>{ if(!down) return; PANEL_RATE[k] = clamp(r0 * Math.exp((y0 - e.clientY)*.012), .1, 4); updateKnobs(); });
+    d.addEventListener('pointerup', ()=>{ down = false; });
+    d.addEventListener('dblclick', ()=>{ PANEL_RATE[k] = 1; updateKnobs(); });
+    d.addEventListener('wheel', e=>{ e.preventDefault(); PANEL_RATE[k] = clamp(PANEL_RATE[k] * Math.exp(-e.deltaY*.002), .1, 4); updateKnobs(); }, {passive:false});
+  });
+  updateKnobs();
+}
+
+/* ───────── 무대 화면 출력창 (프로젝터) ─────────
+   지금 그려지는 3D 화면을 그대로 스트림으로 떠서 새 창에 띄움 — 조작은 원래 창에서, 출력창은 실시간으로 따라감 */
+let outWin = null, outStream = null;
+function openOutputWindow(){
+  const note = document.getElementById('outWinNote');
+  if(outWin && !outWin.closed){ outWin.focus(); return; }
+  outWin = window.open('', 'resona_stage_output', 'width=1280,height=720');
+  if(!outWin){ note.textContent = '출력창이 막혔어요 — 크롬 주소창 오른쪽의 팝업 차단 아이콘에서 「항상 허용」 후 다시 누르세요'; return; }
+  const d = outWin.document;
+  d.open(); d.write(`<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>RESONA 무대 출력</title>
+<style>html,body{margin:0;height:100%;background:#000;overflow:hidden}video{width:100%;height:100%;object-fit:contain;display:block;background:#000}
+#tip{position:fixed;left:16px;bottom:16px;color:#9aa6bb;font:13px -apple-system,sans-serif;background:rgba(0,0,0,.6);padding:8px 12px;border-radius:4px;transition:opacity .6s}
+body.idle{cursor:none} body.idle #tip{opacity:0}</style></head>
+<body><video autoplay muted playsinline></video><div id="tip">프로젝터 화면으로 끌어다 놓고 더블클릭 = 전체화면 · 조작은 노트북 창에서</div></body></html>`); d.close();
+  if(!outStream) outStream = canvas.captureStream(60);
+  const v = d.querySelector('video'); v.srcObject = outStream; v.play().catch(()=>{});
+  d.addEventListener('dblclick', ()=>{ d.fullscreenElement ? d.exitFullscreen() : d.documentElement.requestFullscreen().catch(()=>{}); });
+  let idle; const wake = ()=>{ d.body.classList.remove('idle'); clearTimeout(idle); idle = setTimeout(()=>d.body.classList.add('idle'), 2500); };
+  d.addEventListener('mousemove', wake); wake();
+  document.getElementById('btnOutput').classList.add('on');
+  note.textContent = '출력창 열림 — 노트북의 이 창은 최소화하거나 다른 창으로 완전히 가리지 마세요 (크롬이 그리기를 멈추면 출력도 멈춤)';
+  const watch = setInterval(()=>{ if(outWin.closed){ clearInterval(watch); document.getElementById('btnOutput').classList.remove('on'); note.textContent = '출력창 닫힘'; } }, 1000);
+}
+document.getElementById('btnOutput').onclick = openOutputWindow;
+document.getElementById('btnSelfOut').onclick = ()=>{            // 예비 — 팝업이 막히거나 노트북 한 대로 프로젝터만 쓸 때 (화면 미러링·확장 모니터로 이 창 자체를 출력)
+  document.getElementById('app').classList.add('nopanel');
+  document.documentElement.requestFullscreen().catch(()=>{});
+  document.getElementById('outWinNote').textContent = '패널 다시 보기: H 키 · 전체화면 끄기: Esc';
+};
+
+/* ───────── 입력 ───────── */
+window.addEventListener('keydown', e=>{
+  const k = e.key.toLowerCase();
+  if(k>='1' && k<=String(SONGS.length)) setCue(+k-1, cur.v);
+  else if(k==='a') setCue(cur.song,'A');
+  else if(k==='b') setCue(cur.song,'B');
+  else if(k===' '){ e.preventDefault(); setCue(cur.song, cur.v==='A'?'B':'A'); }
+  else if(k==='0') goView('front');
+  else if(k==='9') goView('house');
+  else if(k==='8') goView('side');
+  else if(k==='7') goView('top');
+  else if(k==='o') setOrbit(!controls.autoRotate);
+  else if(k==='c'){ if(director) stopShot(); else setDirector(true); }
+  else if(k==='l') setCity(!cityOn);
+  else if(k==='p') openOutputWindow();
+  else if(k==='v') setSource(!useVideo);
+  else if(k==='t'){ autoCycle=!autoCycle; autoAt=sig.beatCount; }
+  else if(k==='d') forceDemo=!forceDemo;
+  else if(k==='h') document.getElementById('app').classList.toggle('nopanel');
+  else if(k==='f'){ document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen(); }
+});
+if(navigator.requestMIDIAccess){
+  navigator.requestMIDIAccess().then(acc=>{
+    const bind = ()=>{
+      const names=[];
+      acc.inputs.forEach(inp=>{
+        names.push(inp.name);
+        inp.onmidimessage = m=>{
+          const [st, note, vel] = m.data;
+          if((st&0xF0)===0x90 && vel>0){
+            const n6 = SONGS.length*2, idx = ((note-MIDI_BASE_NOTE)%n6+n6)%n6;
+            setCue(Math.floor(idx/2), idx%2 ? 'B':'A');
+          }
+        };
+      });
+      midiName = names.length ? names.join(', ') : '없음';
+    };
+    bind(); acc.onstatechange = bind;
+  }).catch(()=>{ midiName='권한 없음'; });
+}
+
+/* ───────── 루프 ───────── */
+let lastT = performance.now(), fpsAcc=0, fpsN=0, fps=60, panelAcc=0, lastBeatSeen=0;
+const tmpC = new THREE.Color();
+function frame(now){
+  requestAnimationFrame(frame);
+  const dt = Math.min(.1, (now-lastT)/1000); lastT = now;
+  const t = now/1000;
+  updateSignals(t, dt);
+  if(prev && fade<1){ fade = Math.min(1, fade + dt/.6); if(fade>=1) prev=null; }
+  if(autoCycle && sig.beatCount-autoAt >= 32){
+    autoAt = sig.beatCount;
+    const i = (cur.song*2 + (cur.v==='B'?1:0) + 1) % (SONGS.length*2);
+    setCue(Math.floor(i/2), i%2?'B':'A');
+  }
+  if(patternAuto && sig.beatCount-patternAt >= 16){ patternAt = sig.beatCount;
+    const k = BEAM_PATTERNS.findIndex(p=>p.key===beamPattern); setPattern(BEAM_PATTERNS[(k+1)%BEAM_PATTERNS.length].key); }
+  const look = SONGS[cur.song].look, sp = LOOKS[look].spill.map(v=>v/255), isB = cur.v==='B';
+
+  drawLEDCanvas(t); ledTex.needsUpdate = true;
+  updateWires(t);
+  if(Math.floor(t*15) !== Math.floor((t-dt)*15)) sampleScreen();         // 초당 15번
+  const scr = screenAvg.ok ? screenAvg.c : tmpC.setRGB(...sp);
+  ledLight.color.lerp(scr, Math.min(1, dt*6));
+  ledLight.intensity = screensOn ? (.25 + screenAvg.lum*1.4) * (1 + sig.beatPulse*.35) : 0;
+
+  // 무빙 빔 — 왼쪽 i 와 오른쪽 i 가 거울상으로 움직인다
+  if(panelAcc===0) Object.keys(LGROUP).forEach(k=>{ if(!LGROUP[k].pick) document.getElementById('swatch_'+k).style.background = `rgb(${sp.map(v=>v*255|0).join(',')})`; });
+  movers.forEach(m=>{
+    const s = Math.sign(m.nx)||1, a = Math.abs(m.nx);
+    aimSmooth(m.g, beamDir(m, t, isB), dt);
+    const hot = (Math.floor(a*5)%4)===((sig.beatInBar|0)-1+4)%4 ? sig.beatPulse : 0;
+    const gk = m.row ? 'back' : 'front', G = LGROUP[gk], mc = groupColor(gk, sp);
+    const w = G.pick ? (m.row ? .12 : .05) : (m.row ? .55 : .25);       // 곡 색: 흰빛 섞음 / 휠 색: 거의 그 색 그대로
+    tmpC.setRGB(mc[0]*(1-w)+w, mc[1]*(1-w)+w, mc[2]*(1-w)+w);
+    m.mat.color.copy(tmpC);
+    m.mat.opacity = G.dim * beamGain * (.08 + sig.rms*.18 + hot*.3 + (m.row ? sig.drums*.1 : sig.bass*.1)) * nearFade(m, m.row ? 720 : 620);   // 조도 = 기본 밝기, 음악 반응은 그 안에서
+    m.lens.material.color.copy(tmpC).multiplyScalar((1.5 + hot*2) * G.dim);
+  });
+  uplights.forEach((u,i)=>{
+    const s = Math.sign(u.nx)||1;
+    aimSmooth(u.g, beamDir(u, t, isB, i), dt);
+    const mc = groupColor('floor', sp), fd = LGROUP.floor.dim;
+    u.mat.color.setRGB(...mc); u.mat.opacity = fd * beamGain * (beamPattern==='free' ? 1 : 2.6) * (.03 + sig.onset*.12 + sig.vocal*.05) * nearFade(u, 520);   // 패턴에선 바닥 조명도 모양을 그리니 더 밝게
+    u.lens.material.color.setRGB(...mc).multiplyScalar((1.2+sig.onset*2) * fd);
+  });
+  // 전구 — 테두리를 따라 달리는 불 + 박자 번쩍
+  for(let i=0;i<bulbPos.length;i++){
+    const p = bulbPos[i];
+    let v;
+    if(p[3]===0) v = .25 + .75*(Math.sin(i*.35 - t*(4+sig.drums*6)) > .6 ? 1 : 0)*(.5+sig.rms) + sig.beatPulse*.6;
+    else v = .2 + (Math.sin(p[1]*.08 - t*6) > .3 ? .6 : 0) + sig.onset*.6;
+    tmpC.setRGB(1.6*v*(.6+sp[0]*.4), 1.2*v*(.35+sp[1]*.3), .8*v*(.2+sp[2]*.4));
+    bulbMesh.setColorAt(i, tmpC);
+  }
+  bulbMesh.instanceColor.needsUpdate = true;
+  // 흰 라인 — 박자에 숨쉬고, 떠 있는 조각은 천천히 오르내림
+  whiteMat.opacity = .5 + sig.rms*.2 + sig.beatPulse*.15;
+  updateCity(t);
+  updateSurfaces(t, dt);
+  neons.forEach(n=>{ const off = hash(Math.floor(t*10), n.seed) < .03 ? .15 : 1;
+    n.mat.color.setScalar(cityOn ? (.7 + sig.vocal*.6 + sig.beatPulse*.25) * off : .04); });
+  neonPink.intensity = cityOn ? .5 + sig.vocal*.8 : 0; neonCyan.intensity = cityOn ? .5 + sig.beatPulse*.8 : 0;
+  // 응원봉
+  if(crowdMode==='auto') updateCrowdShow(t, sp);
+  else if(crowdPick) crowdMat.color.copy(crowdPick).multiplyScalar(1.5); else crowdMat.color.setRGB(sp[0]*1.4, sp[1]*1.4, sp[2]*1.4);
+  if(crowdMode==='song' && panelAcc===0) document.getElementById('crowdSwatch').style.background = `rgb(${sp.map(v=>v*255|0).join(',')})`;
+  crowdMat.opacity = .45 + sig.beatPulse*.45;
+  crowdPts.position.y = sig.beatPulse*2.5;
+  fogs.forEach((f,i)=>{ f.material.opacity = .08 + sig.rms*.1 + Math.sin(t*.4+i)*.02; const lc = ledLight.color; f.material.color.setRGB(.55+lc.r*.45,.55+lc.g*.45,.6+lc.b*.4); });   // 안개도 스크린 색으로
+  // 밴드
+  band.forEach(f=>f.update(t));
+  cymbals.forEach((c,i)=>c.rotation.z = (i%2?-1:1)*(.15+sig.drums*.2));
+
+  if(sig.beatCount !== lastBeatSeen){ lastBeatSeen = sig.beatCount; onBeatCut(); }
+  if(shot){ updateShot(t, dt); }
+  else {
+    if(camAnim){
+      camAnim.t = Math.min(1, camAnim.t + dt/1.1);
+      const k = ease(camAnim.t);
+      camera.position.lerpVectors(camAnim.p0, camAnim.p1, k);
+      controls.target.lerpVectors(camAnim.t0, camAnim.t1, k);
+      if(camAnim.t>=1) camAnim = null;
+    }
+    controls.update();
+  }
+  composer.render();
+
+  fpsAcc += dt; fpsN++;
+  if(fpsAcc>.5){ fps = fpsN/fpsAcc; fpsAcc=0; fpsN=0; }
+  panelAcc += dt;
+  if(panelAcc > 1/30){ panelAcc=0; updatePanel(fps); }
+}
+resize();
+requestAnimationFrame(frame);
+</script>
+<script>
+  // three.js(CDN)를 못 불러오면 안내 — 인터넷이 없을 때
+  window.addEventListener('error', e=>{
+    if(String(e.message||'').match(/import|module|fetch/i)){
+      const el=document.getElementById('err'); el.style.display='block';
+      el.textContent='3D 엔진을 못 불러왔어요. 파일을 직접 더블클릭하지 말고 시작.command 로 여세요 (lib 폴더가 같이 있어야 함).';
+    }
+  });
+</script>
+</body>
+</html>

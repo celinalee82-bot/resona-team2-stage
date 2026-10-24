@@ -1,0 +1,599 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RESONA 무대 시뮬레이터</title>
+<!--
+  RESONA 무대 시뮬레이터 v0.1 (2026-10-23)
+  - resona.html → relay.py(ws://localhost:9980) → 이 화면
+  - 레퍼런스: 04_참고자료/2026-10-23-XMF2026-레퍼런스-음악반응LED.md
+  - 연결이 없으면 자동으로 DEMO(가상 118 BPM 신호)로 돈다.
+  - 다른 컴퓨터에서 볼 때: stage_sim.html?ws=ws://<레조나 컴퓨터 IP>:9980
+-->
+<style>
+  :root{
+    --bg:#000; --panel:#0b1220; --panel2:#111a2c; --line:#1d2a44;
+    --bar:#2f6fb5; --text:#dfe6f2; --dim:#7d8aa3; --hot:#ff4a5a; --ok:#3ddc84; --warn:#f2b33d;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Pretendard","Apple SD Gothic Neo",sans-serif;overflow:hidden}
+  #app{display:grid;grid-template-columns:230px 1fr;height:100%}
+  #app.nopanel{grid-template-columns:1fr}
+  #app.nopanel aside{display:none}
+  aside{background:var(--panel);border-right:1px solid var(--line);padding:18px 14px;overflow-y:auto;
+    display:flex;flex-direction:column;gap:10px}
+  .cue-title{font-weight:800;font-size:15px;letter-spacing:.04em}
+  .cue-title b{color:var(--dim);margin-right:6px}
+  .sub{font-size:9px;letter-spacing:.14em;color:var(--dim);text-transform:uppercase}
+  .driver{background:var(--panel2);border:1px solid var(--line);border-radius:3px;padding:8px 12px;
+    font-family:ui-monospace,Menlo,monospace;font-size:14px;display:flex;justify-content:space-between}
+  .bar{display:grid;grid-template-columns:44px 1fr 34px;align-items:center;gap:6px;font-size:10px;color:var(--dim)}
+  .bar .track{height:12px;background:var(--panel2);position:relative}
+  .bar .fill{position:absolute;left:0;top:0;bottom:0;background:var(--bar)}
+  .bar .peak{position:absolute;top:0;bottom:0;width:2px;background:#fff}
+  .bar.drv{color:var(--text)}
+  .bar.drv .fill{background:#4f95e0}
+  .bar .num{font-family:ui-monospace,Menlo,monospace;text-align:right}
+  #cuelist{display:flex;flex-direction:column;gap:3px}
+  .cue{display:flex;justify-content:space-between;padding:6px 8px;border:1px solid var(--line);border-radius:3px;
+    font-size:12px;cursor:pointer;background:transparent;color:var(--dim);text-align:left}
+  .cue:hover{color:var(--text)}
+  .cue.on{background:#1b3a66;color:#fff;border-color:#2f6fb5}
+  .cue small{font-family:ui-monospace,Menlo,monospace;opacity:.7}
+  .status{font-size:11px;line-height:1.7;color:var(--dim);border-top:1px solid var(--line);padding-top:10px;margin-top:auto}
+  .status .led{display:inline-block;width:8px;height:8px;border-radius:50%;background:#444;margin-right:6px;vertical-align:middle}
+  .status .led.ok{background:var(--ok)} .status .led.warn{background:var(--warn)}
+  .keys{font-size:10px;color:var(--dim);line-height:1.6}
+  .keys kbd{font-family:ui-monospace,Menlo,monospace;background:var(--panel2);border:1px solid var(--line);
+    border-radius:2px;padding:0 4px;color:var(--text)}
+  main{position:relative;min-width:0}
+  canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+</style>
+</head>
+<body>
+<div id="app">
+  <aside>
+    <div class="cue-title" id="cueTitle"><b>1</b>GLITCH A</div>
+    <div class="sub">Audio input gain</div>
+    <div class="driver"><span id="drvName">drums</span><span id="drvVal">0.00</span></div>
+    <div id="bars"></div>
+    <div class="sub" style="margin-top:6px">Cue</div>
+    <div id="cuelist"></div>
+    <div class="status" id="status"></div>
+    <div class="keys">
+      <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> 곡 · <kbd>A</kbd><kbd>B</kbd> 버전 · <kbd>Space</kbd> A↔B<br>
+      <kbd>T</kbd> 자동 순환 · <kbd>D</kbd> 데모 고정<br>
+      <kbd>F</kbd> 전체화면 · <kbd>H</kbd> 패널 숨김
+    </div>
+  </aside>
+  <main><canvas id="cv"></canvas></main>
+</div>
+
+<script>
+'use strict';
+
+/* ───────── 무대 배치 (가상 좌표 1000 × 330) ─────────
+   미니어처 모형의 마스크 구멍과 같은 숫자를 쓰도록 여기 한 곳에 모아 둔다.
+   모니터 크기가 정해지면 이 블록만 고치면 된다. */
+const V = {w:1000, h:330};
+const DECK_Y = 240;                               // 무대 바닥 높이
+const WALL = {x:50, y:70, cell:20, map:[          // 왼쪽 모자이크 LED 벽 (# = 캐비닛 한 칸)
+  '......##..####..',
+  '...#######.#####',
+  '..##############',
+  '################',
+  '.###############',
+  '################',
+  '..##############',
+  '################',
+]};
+const COLS = [                                    // 가운데 세로 기둥 LED (x, y, w, h)
+  {x:378, y:95,  w:18, h:145},
+  {x:452, y:100, w:40, h:140},
+  {x:515, y:85,  w:75, h:155},
+  {x:610, y:100, w:40, h:140},
+  {x:690, y:95,  w:18, h:145},
+];
+const SIDE = {x:790, y:70, w:90, h:140};          // 오른쪽 사이드 스크린 (콘텐츠 안 받음)
+const CENTER = {x:552, y:162};                    // 가운데 기둥 = 원형 트러스 중심
+
+/* ───────── 큐 (곡 × 버전) ─────────
+   A = 패널마다 따로(쪼개짐) · B = 모든 패널이 한 장(이어짐)
+   driver = 이 큐를 움직이는 트랙 — 왼쪽 패널에 크게 표시된다. */
+const SONGS = [
+  {name:'GLITCH',   look:'glitch',   driver:{A:'drums', B:'bass'}},
+  {name:'SKY',      look:'sky',      driver:{A:'other', B:'vocal'}},
+  {name:'SCRIBBLE', look:'scribble', driver:{A:'drums', B:'vocal'}},
+];
+const MIDI_BASE_NOTE = 36;  // 36=1A 37=1B 38=2A 39=2B 40=3A 41=3B (그 위 음은 6개씩 반복)
+
+/* ───────── 패널 계산 ───────── */
+function bbox(rects){
+  let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
+  rects.forEach(r=>{x0=Math.min(x0,r.x);y0=Math.min(y0,r.y);x1=Math.max(x1,r.x+r.w);y1=Math.max(y1,r.y+r.h);});
+  return {x:x0,y:y0,w:x1-x0,h:y1-y0};
+}
+const wallCells = [];
+WALL.map.forEach((row,j)=>[...row].forEach((ch,i)=>{
+  if(ch==='#') wallCells.push({x:WALL.x+i*WALL.cell, y:WALL.y+j*WALL.cell, w:WALL.cell, h:WALL.cell});
+}));
+const PANELS = [{rects:wallCells, frame:bbox(wallCells)}].concat(COLS.map(r=>({rects:[r], frame:r})));
+const ALL_RECTS = PANELS.flatMap(p=>p.rects);
+const UNION = bbox(ALL_RECTS);
+
+/* ───────── 유틸 ───────── */
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+function hash(a,b=0,c=0){ const x=Math.sin(a*127.1+b*311.7+c*74.7)*43758.5453; return x-Math.floor(x); }
+function noise2(x,y){
+  const xi=Math.floor(x), yi=Math.floor(y), xf=x-xi, yf=y-yi;
+  const u=xf*xf*(3-2*xf), v=yf*yf*(3-2*yf);
+  const a=hash(xi,yi), b=hash(xi+1,yi), c=hash(xi,yi+1), d=hash(xi+1,yi+1);
+  const top=a+(b-a)*u, bot=c+(d-c)*u;
+  return top+(bot-top)*v;
+}
+
+/* ───────── 신호 ───────── */
+const KEYS = ['rms','drums','bass','vocal','other','low','hi'];
+const sig = {rms:0,drums:0,bass:0,vocal:0,other:0,low:0,hi:0,onset:0,beatPulse:0,beatCount:0,bpm:0,beatInBar:1};
+const target = {rms:0,drums:0,bass:0,vocal:0,other:0,low:0,hi:0};
+const peakHold = {};
+KEYS.forEach(k=>peakHold[k]=0);
+let lastBeatVal = null, lastLiveAt = -1e9, forceDemo = false, msgCount = 0;
+
+function ingest(d){
+  const n = k => (typeof d[k]==='number' ? d[k] : 0);
+  target.drums = n('stem_drums');
+  target.bass  = n('stem_bass');
+  target.vocal = n('stem_vocal');
+  target.other = n('stem_other');
+  target.rms   = n('rms');
+  target.low   = Math.max(n('band_sub'), n('band_low'));
+  target.hi    = Math.max(n('band_hi'), n('band_air'));
+  sig.onset    = Math.max(sig.onset, n('onset'));
+  sig.bpm      = n('bpm');
+  sig.beatInBar= n('beat_in_bar') || 1;
+  if(typeof d.beat==='number'){
+    if(lastBeatVal!==null && d.beat!==lastBeatVal){ sig.beatPulse=1; sig.beatCount++; }
+    lastBeatVal = d.beat;
+  }
+  lastLiveAt = performance.now(); msgCount++;
+}
+function parseOscText(txt){   // resona.html 의 「포맷: OSC-TXT」 도 받는다
+  const d = {};
+  txt.split('\n').forEach(line=>{
+    const sp = line.indexOf(' '); if(sp<0) return;
+    const key = line.slice(0,sp).replace('/resona/','').replace(/\//g,'_');
+    const v = parseFloat(line.slice(sp+1));
+    d[key] = isNaN(v) ? line.slice(sp+1) : v;
+  });
+  return d;
+}
+
+/* 데모 신호 — 연결이 없을 때 가상의 118 BPM 밴드 */
+let demoLastBeat = -1;
+function demoSignal(t){
+  const bpm = 118, ph = t*bpm/60, beat = Math.floor(ph), fr = ph-beat, bib = beat%4;
+  const section = Math.floor(beat/16)%2;           // 16박마다 벌스/후렴
+  const kick  = Math.exp(-fr*7);
+  const snare = (bib===1||bib===3) ? Math.exp(-fr*9)*.9 : 0;
+  target.drums = clamp(.55*kick + .5*snare + .05*hash(Math.floor(t*30)),0,1);
+  target.bass  = clamp((bib===0||bib===2 ? .85 : .45)*Math.exp(-fr*3) + .1, 0, 1);
+  target.vocal = clamp(section ? .55+.3*Math.sin(t*1.7)+.1*Math.sin(t*5.1) : .12+.1*Math.sin(t*.9), 0, 1);
+  target.other = clamp(.3 + .35*noise2(t*.8, 3) + (section?.15:0), 0, 1);
+  target.low   = clamp(.6*kick + .4*target.bass, 0, 1);
+  target.hi    = clamp(.4*snare + .3*noise2(t*4,9) + (section?.2:0), 0, 1);
+  target.rms   = clamp((target.drums+target.bass+target.vocal+target.other)/3.2, 0, 1);
+  if(beat!==demoLastBeat){ demoLastBeat=beat; sig.beatPulse=1; sig.beatCount++; if(bib===0||bib===2) sig.onset=1; }
+  sig.bpm = bpm; sig.beatInBar = bib+1;
+}
+function isLive(){ return !forceDemo && performance.now()-lastLiveAt < 1500; }
+
+function updateSignals(t, dt){
+  if(!isLive()) demoSignal(t);
+  KEYS.forEach(k=>{
+    const tv = clamp(target[k]||0, 0, 1);
+    sig[k] += (tv-sig[k]) * Math.min(1, dt*(tv>sig[k] ? 30 : 9));   // 빨리 오르고 천천히 내려옴
+    peakHold[k] = Math.max(sig[k], peakHold[k]-dt*.35);
+  });
+  sig.beatPulse = Math.max(0, sig.beatPulse - dt*4);
+  sig.onset     = Math.max(0, sig.onset - dt*5);
+}
+
+/* ───────── WebSocket ───────── */
+const qs = new URLSearchParams(location.search);
+const WS_URL = qs.get('ws') || 'ws://localhost:9980';
+let ws = null, wsState = '대기';
+function wsConnect(){
+  try{ ws = new WebSocket(WS_URL); }catch(e){ wsState='주소 오류'; return; }
+  wsState = '연결 중';
+  ws.onopen  = ()=>{ wsState='연결됨'; };
+  ws.onclose = ()=>{ wsState='끊김 — 재시도'; ws=null; setTimeout(wsConnect, 3000); };
+  ws.onerror = ()=>{};
+  ws.onmessage = e=>{
+    if(typeof e.data!=='string') return;
+    let d; try{ d=JSON.parse(e.data); }catch(_){ d=parseOscText(e.data); }
+    if(d && typeof d==='object') ingest(d);
+  };
+}
+wsConnect();
+
+/* ───────── 큐 상태 ───────── */
+let cur = {song:0, v:'A'}, prev = null, fade = 1, autoCycle = false, autoAt = 0;
+function setCue(song, v){
+  song = clamp(song,0,SONGS.length-1);
+  if(song===cur.song && v===cur.v) return;
+  prev = {...cur}; cur = {song, v}; fade = 0;
+  renderCueUI();
+}
+
+/* ───────── 그림 (룩) ─────────
+   paint(c, frame, seed, t, variant)
+   frame = 그림이 펼쳐지는 사각형 — A면 패널 자기 사각형, B면 전체(UNION)라서 한 장으로 이어진다. */
+const LOOKS = {
+  glitch:{spill:[232,54,74], paint:paintGlitch},
+  sky:{spill:[110,160,235], paint:paintSky},
+  scribble:{spill:[235,225,205], paint:paintScribble},
+};
+
+function paintGlitch(c, f, seed, t, variant){
+  c.fillStyle='#0d0d0f'; c.fillRect(f.x,f.y,f.w,f.h);
+  const bs = 9;
+  const step = Math.floor(t*(1.5+sig.drums*9)) + sig.beatCount*7;
+  const greys = ['#f2f2f2','#d9d9dc','#b8b8bd','#8d8d94','#5a5a61'];
+  for(let y=f.y, row=0; y<f.y+f.h; y+=bs, row++){
+    const shift = hash(row,seed,step) < sig.onset*.6 ? (hash(row,step,3)-.5)*50 : 0;
+    for(let x=f.x, col=0; x<f.x+f.w; x+=bs*1.6, col++){
+      const r = hash(col+seed*31, row, Math.floor(step/(1+col%3)));
+      if(r>.82) continue;
+      let color;
+      if(r < .07 + sig.drums*.18) color = '#e8364a';
+      else color = greys[Math.floor(hash(col,row+seed)*greys.length)];
+      c.fillStyle = color;
+      c.fillRect(x+shift, y, bs*1.6*(.5+hash(col,row,7)*.5)-1, bs-1);
+    }
+  }
+  const cx = variant==='B' ? CENTER.x : f.x+f.w/2, cy = variant==='B' ? CENTER.y : f.y+f.h/2;
+  const amp = variant==='B' ? sig.bass : sig.drums*.6;
+  c.save(); c.lineWidth = 5;
+  for(let k=0;k<16;k++){
+    const r = (k*15 + t*(25+70*amp)) % 240;
+    c.strokeStyle = k%2 ? `rgba(0,0,0,${.35+amp*.5})` : `rgba(255,255,255,${.15+amp*.6})`;
+    c.beginPath();
+    c.ellipse(cx, cy, r, r*.9, t*.3+k*.4, 0, Math.PI*2);
+    c.stroke();
+  }
+  c.restore();
+}
+
+function paintSky(c, f, seed, t, variant){
+  if(variant==='A'){
+    c.fillStyle='#1f4fa3'; c.fillRect(f.x,f.y,f.w,f.h);
+    const tw=22, th=17;
+    const pal=[['#cfe3f7','#7fb0e6'],['#f4f1ea','#c9d6e4'],['#7ea36a','#cfe0b4'],['#e39a3b','#f6d29c'],['#16305f','#3c6cb4'],['#ffffff','#9cc3ee']];
+    const epoch = Math.floor(t*.4) + Math.floor(sig.beatCount/4);
+    for(let y=f.y, j=0; y<f.y+f.h; y+=th, j++){
+      for(let x=f.x, i=0; x<f.x+f.w; x+=tw, i++){
+        const r = hash(i+seed*17, j, epoch);
+        if(r > .35 + sig.other*.5) continue;
+        const p = pal[Math.floor(hash(i,j,seed+epoch)*pal.length)];
+        const g = c.createLinearGradient(x,y,x+tw,y+th);
+        g.addColorStop(0,p[0]); g.addColorStop(1,p[1]);
+        c.globalAlpha = .55 + .45*(hash(i,j,sig.beatCount)<.15 ? sig.beatPulse : .6);
+        c.fillStyle = g; c.fillRect(x+1,y+1,tw-2,th-2);
+      }
+    }
+    c.globalAlpha = 1;
+  } else {
+    const g = c.createLinearGradient(0,f.y,0,f.y+f.h);
+    g.addColorStop(0,'#2d63c4'); g.addColorStop(.55,'#9fc3ee'); g.addColorStop(1,'#efe6dc');
+    c.fillStyle=g; c.fillRect(f.x,f.y,f.w,f.h);
+    for(let i=0;i<11;i++){
+      const speed = 6*(1+i%3);
+      const x = f.x - 120 + ((i*173 + t*speed) % (f.w+240));
+      const y = f.y + f.h*(.2 + .6*hash(i,4));
+      const rad = (45 + 50*hash(i,9)) * (1 + sig.vocal*.35);
+      const cg = c.createRadialGradient(x,y,0,x,y,rad);
+      cg.addColorStop(0,`rgba(255,255,255,${.55+sig.vocal*.35})`); cg.addColorStop(1,'rgba(255,255,255,0)');
+      c.fillStyle=cg; c.beginPath(); c.ellipse(x,y,rad*1.6,rad,0,0,Math.PI*2); c.fill();
+    }
+    c.strokeStyle=`rgba(255,255,255,${.25+sig.bass*.6})`; c.lineWidth=2+sig.bass*3;
+    c.beginPath(); c.arc(CENTER.x, CENTER.y, 58+sig.beatPulse*6, 0, Math.PI*2); c.stroke();
+  }
+}
+
+function paintScribble(c, f, seed, t, variant){
+  c.fillStyle='#ebe7df'; c.fillRect(f.x,f.y,f.w,f.h);
+  const epoch = Math.floor(sig.beatCount/2) + seed*13;
+  for(let i=0;i<7;i++){                                     // 콜라주 종이 조각
+    const r=hash(i,epoch,1);
+    c.fillStyle = ['#e2a35a','#d8c7a8','#f3efe6','#c9b08a'][i%4];
+    c.globalAlpha=.7;
+    c.fillRect(f.x+r*f.w*.9, f.y+hash(i,epoch,2)*f.h*.9, 8+hash(i,3)*f.w*.18, 6+hash(i,5)*f.h*.15);
+  }
+  c.globalAlpha=1; c.lineCap='round';
+  if(variant==='A'){
+    const n = 5 + Math.floor(sig.drums*7);
+    for(let i=0;i<n;i++){
+      const P = k => [f.x+hash(i,k,epoch)*f.w, f.y+hash(k,i,epoch+1)*f.h];
+      const [x0,y0]=P(1),[x1,y1]=P(2),[x2,y2]=P(3),[x3,y3]=P(4);
+      const r=hash(i,epoch,9);
+      c.strokeStyle = r<.1?'#d13b2e': r<.18?'#2c5aa0': r<.24?'#e39a3b':'#1e1e1e';
+      c.lineWidth = .8 + hash(i,epoch)*2.5 + sig.drums*2;
+      c.beginPath(); c.moveTo(x0,y0); c.bezierCurveTo(x1,y1,x2,y2,x3,y3); c.stroke();
+    }
+  } else {
+    for(let line=0; line<3; line++){
+      c.strokeStyle = line===0 ? '#1e1e1e' : line===1 ? 'rgba(209,59,46,.8)' : 'rgba(44,90,160,.7)';
+      c.lineWidth = (line===0 ? 2 : 1.2) + sig.vocal*3;
+      c.beginPath();
+      for(let s=0; s<=160; s++){
+        const x = f.x + f.w*s/160;
+        const y = f.y + f.h*(.5 + .42*(noise2(x*.012+line*3, t*.25)-.5)*2
+                                 + .12*(noise2(x*.05, t*.6+line)-.5)*2*sig.drums);
+        s ? c.lineTo(x,y) : c.moveTo(x,y);
+      }
+      c.stroke();
+    }
+  }
+}
+
+/* ───────── 캔버스 ───────── */
+const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+let scale=1, ox=0, oy=0, dpr=1;
+function resize(){
+  dpr = window.devicePixelRatio||1;
+  const r = cv.getBoundingClientRect();
+  cv.width = Math.round(r.width*dpr); cv.height = Math.round(r.height*dpr);
+  scale = Math.min(r.width/V.w, r.height/V.h);
+  ox = (r.width - V.w*scale)/2; oy = (r.height - V.h*scale)/2;
+}
+window.addEventListener('resize', resize);
+
+const crowd = Array.from({length:110}, (_,i)=>({
+  x: hash(i,1)*V.w, s: 9+hash(i,2)*9, ph: hash(i,3)*6.28, k: .5+hash(i,4), arm: hash(i,5)<.18,
+}));
+
+function drawBackdrop(c, t, look){
+  c.fillStyle='#000'; c.fillRect(-500,-500,V.w+1000,V.h+1000);
+  const [r,g,b] = LOOKS[look].spill;
+  const haze = c.createLinearGradient(0,40,0,DECK_Y+20);
+  haze.addColorStop(0,'rgba(40,40,46,0)');
+  haze.addColorStop(.5,`rgba(${50+r*.08|0},${50+g*.08|0},${56+b*.08|0},${.6+sig.rms*.3})`);
+  haze.addColorStop(1,'rgba(30,30,34,.9)');
+  c.fillStyle=haze; c.fillRect(0,40,V.w,DECK_Y-20);
+}
+
+function drawTruss(c){
+  c.save(); c.strokeStyle='rgba(150,150,160,.35)'; c.lineWidth=.8;
+  const lattice=(x0,y0,x1,y1,wd,n)=>{
+    const dx=x1-x0, dy=y1-y0, L=Math.hypot(dx,dy), nx=-dy/L*wd/2, ny=dx/L*wd/2;
+    c.beginPath();
+    c.moveTo(x0+nx,y0+ny); c.lineTo(x1+nx,y1+ny); c.moveTo(x0-nx,y0-ny); c.lineTo(x1-nx,y1-ny);
+    for(let i=0;i<n;i++){
+      const a=i/n, b=(i+1)/n, s=i%2?1:-1;
+      c.moveTo(x0+dx*a+nx*s, y0+dy*a+ny*s); c.lineTo(x0+dx*b-nx*s, y0+dy*b-ny*s);
+    }
+    c.stroke();
+  };
+  lattice(36,62,770,62,8,90);
+  lattice(40,62,40,DECK_Y,8,22); lattice(766,62,766,DECK_Y,8,22);
+  lattice(440,62,440,DECK_Y,6,20); lattice(662,62,662,DECK_Y,6,20);
+  c.setLineDash([3,3]); c.beginPath(); c.arc(CENTER.x, CENTER.y, 80, 0, Math.PI*2); c.stroke();
+  c.restore();
+}
+
+function drawPanels(c, t){
+  const paintState = (state, alpha) => {
+    const look = LOOKS[SONGS[state.song].look];
+    c.globalAlpha = alpha;
+    PANELS.forEach((p,i)=>{
+      c.save(); c.beginPath(); p.rects.forEach(r=>c.rect(r.x,r.y,r.w,r.h)); c.clip();
+      if(state.v==='B') look.paint(c, UNION, 0, t, 'B');
+      else look.paint(c, p.frame, i+1, t, 'A');
+      c.restore();
+    });
+    c.globalAlpha = 1;
+  };
+  if(prev && fade<1) paintState(prev, 1);
+  paintState(cur, prev && fade<1 ? fade : 1);
+
+  // LED 픽셀 결 + 캐비닛 이음매
+  c.save(); c.beginPath(); ALL_RECTS.forEach(r=>c.rect(r.x,r.y,r.w,r.h)); c.clip();
+  c.strokeStyle='rgba(0,0,0,.22)'; c.lineWidth=.6; c.beginPath();
+  for(let y=UNION.y; y<UNION.y+UNION.h; y+=2.5){ c.moveTo(UNION.x,y); c.lineTo(UNION.x+UNION.w,y); }
+  c.stroke();
+  c.strokeStyle='rgba(0,0,0,.5)'; c.lineWidth=.8; c.beginPath();
+  wallCells.forEach(r=>c.rect(r.x,r.y,r.w,r.h));
+  c.stroke(); c.restore();
+  c.strokeStyle='rgba(0,0,0,.8)'; c.lineWidth=1;
+  COLS.forEach(r=>c.strokeRect(r.x,r.y,r.w,r.h));
+}
+
+function drawSide(c){
+  const g=c.createLinearGradient(SIDE.x,SIDE.y,SIDE.x,SIDE.y+SIDE.h);
+  g.addColorStop(0,'#77777c'); g.addColorStop(1,'#5e5e63');
+  c.fillStyle=g; c.fillRect(SIDE.x,SIDE.y,SIDE.w,SIDE.h);
+  c.strokeStyle='#2a2a2e'; c.lineWidth=2; c.strokeRect(SIDE.x,SIDE.y,SIDE.w,SIDE.h);
+  c.fillStyle='#1b1b1e'; c.fillRect(SIDE.x+SIDE.w/2-2, SIDE.y+SIDE.h, 4, DECK_Y-SIDE.y-SIDE.h);
+}
+
+function person(c, x, base, h, bob, guitar){
+  const y = base - bob;
+  c.beginPath(); c.arc(x, y-h*.88, h*.1, 0, Math.PI*2); c.fill();
+  c.beginPath();
+  c.moveTo(x-h*.13, y-h*.76); c.lineTo(x+h*.13, y-h*.76); c.lineTo(x+h*.09, y-h*.42);
+  c.lineTo(x+h*.1, base); c.lineTo(x+h*.03, base); c.lineTo(x, y-h*.32);
+  c.lineTo(x-h*.03, base); c.lineTo(x-h*.1, base); c.lineTo(x-h*.09, y-h*.42); c.closePath(); c.fill();
+  if(guitar){ c.save(); c.lineWidth=2; c.strokeStyle='#000'; c.beginPath();
+    c.moveTo(x-h*.2, y-h*.38); c.lineTo(x+h*.28, y-h*.66); c.stroke(); c.restore(); }
+}
+
+function drawStage(c, t){
+  c.fillStyle='#0b0b0c'; c.fillRect(30, DECK_Y, 740, 10);
+  c.fillStyle='rgba(120,120,130,.4)'; c.fillRect(30, DECK_Y, 740, 1);
+  c.fillStyle='#000';
+  const bob = sig.beatPulse*1.6;
+  person(c, 470, DECK_Y, 30, bob, true);
+  person(c, 505, DECK_Y, 31, bob*.6, false);
+  person(c, 632, DECK_Y, 30, bob, true);
+  // 드럼 세트
+  const dx=552;
+  c.beginPath(); c.arc(dx, DECK_Y-8, 8, 0, Math.PI*2); c.fill();
+  c.fillRect(dx-20, DECK_Y-12, 10, 12); c.fillRect(dx+11, DECK_Y-12, 10, 12);
+  c.beginPath(); c.arc(dx, DECK_Y-27, 5, 0, Math.PI*2); c.fill();
+  c.fillRect(dx-6, DECK_Y-23, 12, 12);
+  c.save(); c.strokeStyle='#000'; c.lineWidth=1.5; c.beginPath();
+  c.moveTo(dx-26, DECK_Y-26-sig.drums*2); c.lineTo(dx-12, DECK_Y-28);
+  c.moveTo(dx+12, DECK_Y-30); c.lineTo(dx+28, DECK_Y-28+sig.drums*2);
+  c.moveTo(dx-19, DECK_Y-27); c.lineTo(dx-19, DECK_Y); c.moveTo(dx+20, DECK_Y-29); c.lineTo(dx+20, DECK_Y);
+  c.stroke(); c.restore();
+}
+
+function drawBeams(c, t, look){
+  const [r,g,b] = LOOKS[look].spill;
+  c.save(); c.globalCompositeOperation='lighter';
+  [120,250,440,552,662,720].forEach((x,i)=>{
+    const a = (.03 + sig.rms*.06 + (i%2 ? sig.beatPulse : sig.onset)*.08);
+    const sway = Math.sin(t*.6+i)*30;
+    const gr = c.createLinearGradient(x,62,x+sway,DECK_Y+60);
+    gr.addColorStop(0,`rgba(${(r+255)/2|0},${(g+255)/2|0},${(b+255)/2|0},${a})`);
+    gr.addColorStop(1,'rgba(0,0,0,0)');
+    c.fillStyle=gr; c.beginPath();
+    c.moveTo(x-2,62); c.lineTo(x+2,62); c.lineTo(x+sway+45,DECK_Y+60); c.lineTo(x+sway-45,DECK_Y+60); c.closePath(); c.fill();
+  });
+  c.restore();
+}
+
+function drawCrowd(c, t, look){
+  const [r,g,b] = LOOKS[look].spill;
+  const floor = c.createLinearGradient(0,DECK_Y+10,0,V.h);
+  floor.addColorStop(0,`rgba(${r*.25|0},${g*.25|0},${b*.25|0},${.35+sig.rms*.3})`);
+  floor.addColorStop(1,'rgba(0,0,0,1)');
+  c.fillStyle=floor; c.fillRect(0,DECK_Y+10,V.w,V.h-DECK_Y-10);
+  c.fillStyle='#000';
+  const base = DECK_Y + 42;
+  crowd.forEach(p=>{
+    const bob = sig.beatPulse*p.k*2.5 + Math.sin(t*2+p.ph)*.5;
+    const y = base - bob;
+    c.beginPath(); c.arc(p.x, y-p.s*.55, p.s*.28, 0, Math.PI*2); c.fill();
+    c.beginPath(); c.ellipse(p.x, y+p.s*.2, p.s*.55, p.s*.5, 0, 0, Math.PI*2); c.fill();
+    if(p.arm && (sig.onset>.3 || cur.v==='B')){
+      c.save(); c.strokeStyle='#000'; c.lineWidth=2.2; c.beginPath();
+      c.moveTo(p.x+p.s*.3, y); c.lineTo(p.x+p.s*.5, y-p.s*1.4-bob); c.stroke(); c.restore();
+    }
+  });
+  c.fillRect(0, base+6, V.w, V.h);
+}
+
+/* ───────── 왼쪽 패널 ───────── */
+const BARS = [['ave','rms'],['Drums','drums'],['Bass','bass'],['Vocal','vocal'],['Other','other'],['Low','low'],['High','hi']];
+const barsEl = document.getElementById('bars');
+const barEls = BARS.map(([label,key])=>{
+  const row = document.createElement('div'); row.className='bar';
+  row.innerHTML = `<span>${label}</span><div class="track"><div class="fill"></div><div class="peak"></div></div><span class="num">0.00</span>`;
+  barsEl.appendChild(row);
+  return {row, key, fill:row.querySelector('.fill'), peak:row.querySelector('.peak'), num:row.querySelector('.num')};
+});
+const cueListEl = document.getElementById('cuelist');
+const cueBtns = [];
+SONGS.forEach((s,si)=>['A','B'].forEach(v=>{
+  const b = document.createElement('button'); b.className='cue';
+  b.innerHTML = `<span>${si+1} ${s.name} ${v}</span><small>${s.driver[v]}</small>`;
+  b.onclick = ()=>setCue(si,v);
+  cueListEl.appendChild(b); cueBtns.push({b,si,v});
+}));
+function renderCueUI(){
+  const s = SONGS[cur.song];
+  document.getElementById('cueTitle').innerHTML = `<b>${cur.song+1}</b>${s.name} ${cur.v}`;
+  document.getElementById('drvName').textContent = s.driver[cur.v];
+  cueBtns.forEach(o=>o.b.classList.toggle('on', o.si===cur.song && o.v===cur.v));
+}
+renderCueUI();
+
+let midiName = '없음';
+function updatePanel(fps){
+  const drv = SONGS[cur.song].driver[cur.v];
+  document.getElementById('drvVal').textContent = sig[drv].toFixed(2);
+  barEls.forEach(o=>{
+    o.fill.style.width = (sig[o.key]*100).toFixed(1)+'%';
+    o.peak.style.left = (peakHold[o.key]*100).toFixed(1)+'%';
+    o.num.textContent = sig[o.key].toFixed(2);
+    o.row.classList.toggle('drv', o.key===drv);
+  });
+  const live = isLive();
+  document.getElementById('status').innerHTML =
+    `<span class="led ${live?'ok':'warn'}"></span><b>${live?'LIVE · resona':'DEMO'}</b>${forceDemo?' (고정)':''}<br>`+
+    `WS ${WS_URL} — ${wsState}<br>`+
+    `BPM ${sig.bpm? sig.bpm.toFixed(0):'—'} · 박 ${sig.beatInBar|0} · ${fps|0} fps<br>`+
+    `MIDI ${midiName}${autoCycle?' · 자동 순환':''}`;
+}
+
+/* ───────── 입력 ───────── */
+window.addEventListener('keydown', e=>{
+  const k = e.key.toLowerCase();
+  if(k>='1' && k<=String(SONGS.length)) setCue(+k-1, cur.v);
+  else if(k==='a') setCue(cur.song,'A');
+  else if(k==='b') setCue(cur.song,'B');
+  else if(k===' '){ e.preventDefault(); setCue(cur.song, cur.v==='A'?'B':'A'); }
+  else if(k==='t'){ autoCycle=!autoCycle; autoAt=sig.beatCount; }
+  else if(k==='d') forceDemo=!forceDemo;
+  else if(k==='h'){ document.getElementById('app').classList.toggle('nopanel'); setTimeout(resize,0); }
+  else if(k==='f'){ document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen(); }
+});
+if(navigator.requestMIDIAccess){
+  navigator.requestMIDIAccess().then(acc=>{
+    const bind = ()=>{
+      const names=[];
+      acc.inputs.forEach(inp=>{
+        names.push(inp.name);
+        inp.onmidimessage = m=>{
+          const [st, note, vel] = m.data;
+          if((st&0xF0)===0x90 && vel>0){
+            const idx = ((note-MIDI_BASE_NOTE)%(SONGS.length*2)+SONGS.length*2)%(SONGS.length*2);
+            setCue(Math.floor(idx/2), idx%2 ? 'B':'A');
+          }
+        };
+      });
+      midiName = names.length ? names.join(', ') : '없음';
+    };
+    bind(); acc.onstatechange = bind;
+  }).catch(()=>{ midiName='권한 없음'; });
+}
+
+/* ───────── 루프 ───────── */
+let lastT = performance.now(), fpsAcc=0, fpsN=0, fps=60, panelAcc=0;
+function frame(now){
+  const dt = Math.min(.1, (now-lastT)/1000); lastT = now;
+  const t = now/1000;
+  updateSignals(t, dt);
+  if(prev && fade<1){ fade = Math.min(1, fade + dt/.6); if(fade>=1) prev=null; }
+  if(autoCycle && sig.beatCount-autoAt >= 32){
+    autoAt = sig.beatCount;
+    const i = (cur.song*2 + (cur.v==='B'?1:0) + 1) % (SONGS.length*2);
+    setCue(Math.floor(i/2), i%2?'B':'A');
+  }
+  const look = SONGS[cur.song].look;
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.fillStyle='#000'; ctx.fillRect(0,0,cv.width,cv.height);
+  ctx.setTransform(scale*dpr,0,0,scale*dpr,ox*dpr,oy*dpr);
+  drawBackdrop(ctx, t, look);
+  drawTruss(ctx);
+  drawPanels(ctx, t);
+  drawSide(ctx);
+  drawStage(ctx, t);
+  drawBeams(ctx, t, look);
+  drawCrowd(ctx, t, look);
+
+  fpsAcc += dt; fpsN++;
+  if(fpsAcc>.5){ fps = fpsN/fpsAcc; fpsAcc=0; fpsN=0; }
+  panelAcc += dt;
+  if(panelAcc > 1/30){ panelAcc=0; updatePanel(fps); }
+  requestAnimationFrame(frame);
+}
+resize();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

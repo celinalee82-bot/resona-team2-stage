@@ -1,0 +1,843 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RESONA 무대 3D</title>
+<!--
+  RESONA 무대 시뮬레이터 v0.3 (2026-10-23) — 극아타 무대 3D
+  - 회색 라인 세트 + 그 사이에 박힌 LED(전광판·셔터·TV) · 네온 · 오렌지 방 · 백열전구
+  - 마우스: 드래그 = 회전 · 휠 = 줌 · 오른쪽 드래그 = 이동
+  - resona.html → relay.py(ws://localhost:9980) → 이 화면 / 연결 없으면 DEMO
+  - 영상: 화면에 끌어놓기 · 「영상 불러오기」 · ?video=<경로>
+  - three.js 0.160 (CDN — 팀 3D 데모와 같은 방식, 인터넷 필요)
+  - 2D 버전 = stage_sim.html (v0.2) · stage_sim_v0.1.html
+-->
+<style>
+  :root{
+    --bg:#000; --panel:#0b1220; --panel2:#111a2c; --line:#1d2a44;
+    --bar:#2f6fb5; --text:#dfe6f2; --dim:#7d8aa3; --ok:#3ddc84; --warn:#f2b33d;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Pretendard","Apple SD Gothic Neo",sans-serif;overflow:hidden}
+  #app{display:grid;grid-template-columns:230px 1fr;height:100%}
+  #app.nopanel{grid-template-columns:1fr}
+  #app.nopanel aside{display:none}
+  aside{background:var(--panel);border-right:1px solid var(--line);padding:18px 14px;overflow-y:auto;
+    display:flex;flex-direction:column;gap:10px}
+  .cue-title{font-weight:800;font-size:15px;letter-spacing:.04em}
+  .cue-title b{color:var(--dim);margin-right:6px}
+  .sub{font-size:9px;letter-spacing:.14em;color:var(--dim);text-transform:uppercase}
+  .driver{background:var(--panel2);border:1px solid var(--line);border-radius:3px;padding:8px 12px;
+    font-family:ui-monospace,Menlo,monospace;font-size:14px;display:flex;justify-content:space-between}
+  .bar{display:grid;grid-template-columns:44px 1fr 34px;align-items:center;gap:6px;font-size:10px;color:var(--dim)}
+  .bar .track{height:12px;background:var(--panel2);position:relative}
+  .bar .fill{position:absolute;left:0;top:0;bottom:0;background:var(--bar)}
+  .bar .peak{position:absolute;top:0;bottom:0;width:2px;background:#fff}
+  .bar.drv{color:var(--text)}
+  .bar.drv .fill{background:#4f95e0}
+  .bar .num{font-family:ui-monospace,Menlo,monospace;text-align:right}
+  #cuelist{display:flex;flex-direction:column;gap:3px}
+  .cue{display:flex;justify-content:space-between;padding:6px 8px;border:1px solid var(--line);border-radius:3px;
+    font-size:12px;cursor:pointer;background:transparent;color:var(--dim);text-align:left}
+  .cue:hover{color:var(--text)}
+  .cue.on{background:#1b3a66;color:#fff;border-color:#2f6fb5}
+  .cue small{font-family:ui-monospace,Menlo,monospace;opacity:.7}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:4px}
+  .btn{padding:7px 8px;border:1px solid var(--line);border-radius:3px;background:transparent;color:var(--dim);font-size:12px;cursor:pointer}
+  .btn:hover{color:var(--text)}
+  .btn.on{background:#13284a;color:#fff;border-color:#2f6fb5}
+  .vid .name{font-size:10px;color:var(--dim);word-break:break-all;margin-top:4px}
+  .status{font-size:11px;line-height:1.7;color:var(--dim);border-top:1px solid var(--line);padding-top:10px;margin-top:auto}
+  .status .led{display:inline-block;width:8px;height:8px;border-radius:50%;background:#444;margin-right:6px;vertical-align:middle}
+  .status .led.ok{background:var(--ok)} .status .led.warn{background:var(--warn)}
+  .keys{font-size:10px;color:var(--dim);line-height:1.6}
+  .keys kbd{font-family:ui-monospace,Menlo,monospace;background:var(--panel2);border:1px solid var(--line);
+    border-radius:2px;padding:0 4px;color:var(--text)}
+  main{position:relative;min-width:0}
+  #gl{position:absolute;inset:0;width:100%;height:100%;display:block}
+  #drop{position:absolute;inset:12px;border:2px dashed #4f95e0;border-radius:8px;display:none;
+    align-items:center;justify-content:center;font-size:18px;color:#cfe0ff;background:rgba(10,20,40,.6);pointer-events:none}
+  #drop.show{display:flex}
+  #err{position:absolute;left:16px;bottom:16px;right:16px;color:#ffb4b4;font-size:13px;display:none}
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="app">
+  <aside>
+    <div class="cue-title" id="cueTitle"><b>1</b>GLITCH A</div>
+    <div class="sub">Audio input gain</div>
+    <div class="driver"><span id="drvName">drums</span><span id="drvVal">0.00</span></div>
+    <div id="bars"></div>
+    <div class="sub" style="margin-top:6px">Cue</div>
+    <div id="cuelist"></div>
+    <div class="sub" style="margin-top:6px">시점</div>
+    <div class="row">
+      <button class="btn" data-view="front">정면</button>
+      <button class="btn" data-view="house">객석</button>
+      <button class="btn" data-view="side">측면</button>
+      <button class="btn" data-view="top">위에서</button>
+    </div>
+    <button class="btn" id="btnOrbit">자동 회전</button>
+    <div class="sub" style="margin-top:6px">LED 소스</div>
+    <div class="vid">
+      <div class="row">
+        <button class="btn on" id="btnLoad">영상 불러오기</button>
+        <button class="btn" id="btnSrc">지금: 그림</button>
+      </div>
+      <div class="name" id="vidName">영상 없음 — 화면에 끌어놓아도 됨</div>
+      <input type="file" id="file" accept="video/*" hidden>
+    </div>
+    <div class="status" id="status"></div>
+    <div class="keys">
+      <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> 곡 · <kbd>A</kbd><kbd>B</kbd> 버전 · <kbd>Space</kbd> A↔B<br>
+      <kbd>0</kbd> 정면 <kbd>9</kbd> 객석 <kbd>8</kbd> 측면 <kbd>7</kbd> 위 · <kbd>O</kbd> 자동 회전<br>
+      드래그 회전 · 휠 줌 · 오른쪽 드래그 이동<br>
+      <kbd>V</kbd> 영상↔그림 · <kbd>T</kbd> 큐 자동 · <kbd>D</kbd> 데모<br>
+      <kbd>F</kbd> 전체화면 · <kbd>H</kbd> 패널 숨김
+    </div>
+  </aside>
+  <main id="main">
+    <canvas id="gl"></canvas>
+    <div id="drop">영상을 놓으면 LED에 띄웁니다</div>
+    <div id="err"></div>
+  </main>
+</div>
+<video id="vid" muted loop playsinline crossorigin="anonymous" style="display:none"></video>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+/* ───────── 무대 배치 ─────────
+   x·y = 정면 입면 좌표 (2D 버전 stage_sim.html 과 같은 숫자, 가로 1000 · 바닥 y=505)
+   z   = 깊이 (0 = 무대 앞선, − = 안쪽)
+   미니어처 모형의 치수도 여기 한 곳에서 맞춘다. */
+const GROUND = 505;
+const SLOTS = {
+  board:   {x:623, y:152, w:267, h:158, z:-80},   // 큰 도트 전광판 — 메인
+  tv:      {x:618, y:352, w:45,  h:28,  z:26},    // 작은 TV
+  shutter: {x:157, y:392, w:124, h:112, z:10.5},  // 셔터 = 줄 LED
+  room:    {x:678, y:393, w:142, h:107, z:-110},  // 오렌지 방 (안쪽 벽이 빛남)
+  neon:    {x:310, y:388, w:28,  h:46,  z:28},    // 네온 간판
+};
+const BULBS = [[262,320],[322,300],[352,318],[392,332],[412,282],[456,306],[488,316],[520,290],
+               [548,306],[572,298],[600,330],[396,362],[424,352],[452,346]];
+const CENTER = {x:SLOTS.board.x+SLOTS.board.w/2, y:SLOTS.board.y+SLOTS.board.h/2};
+
+/* ───────── 큐 ───────── */
+const SONGS = [
+  {name:'GLITCH',   look:'glitch',   driver:{A:'drums', B:'bass'}},
+  {name:'SKY',      look:'sky',      driver:{A:'other', B:'vocal'}},
+  {name:'SCRIBBLE', look:'scribble', driver:{A:'drums', B:'vocal'}},
+];
+const MIDI_BASE_NOTE = 36;
+
+/* ───────── 유틸 ───────── */
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+function hash(a,b=0,c=0){ const x=Math.sin(a*127.1+b*311.7+c*74.7)*43758.5453; return x-Math.floor(x); }
+function noise2(x,y){
+  const xi=Math.floor(x), yi=Math.floor(y), xf=x-xi, yf=y-yi;
+  const u=xf*xf*(3-2*xf), v=yf*yf*(3-2*yf);
+  const a=hash(xi,yi), b=hash(xi+1,yi), c=hash(xi,yi+1), d=hash(xi+1,yi+1);
+  const top=a+(b-a)*u, bot=c+(d-c)*u;
+  return top+(bot-top)*v;
+}
+function bbox(rects){
+  let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
+  rects.forEach(r=>{x0=Math.min(x0,r.x);y0=Math.min(y0,r.y);x1=Math.max(x1,r.x+r.w);y1=Math.max(y1,r.y+r.h);});
+  return {x:x0,y:y0,w:x1-x0,h:y1-y0};
+}
+const X = px => px - 500;            // 입면 x → 월드 x
+const Y = py => GROUND - py;         // 입면 y → 월드 y (바닥 = 0)
+
+/* ───────── 신호 ───────── */
+const KEYS = ['rms','drums','bass','vocal','other','low','hi'];
+const sig = {rms:0,drums:0,bass:0,vocal:0,other:0,low:0,hi:0,onset:0,beatPulse:0,beatCount:0,bpm:0,beatInBar:1};
+const target = {rms:0,drums:0,bass:0,vocal:0,other:0,low:0,hi:0};
+const peakHold = {};
+KEYS.forEach(k=>peakHold[k]=0);
+let lastBeatVal = null, lastLiveAt = -1e9, forceDemo = false;
+
+function ingest(d){
+  const n = k => (typeof d[k]==='number' ? d[k] : 0);
+  target.drums = n('stem_drums');
+  target.bass  = n('stem_bass');
+  target.vocal = n('stem_vocal');
+  target.other = n('stem_other');
+  target.rms   = n('rms');
+  target.low   = Math.max(n('band_sub'), n('band_low'));
+  target.hi    = Math.max(n('band_hi'), n('band_air'));
+  sig.onset    = Math.max(sig.onset, n('onset'));
+  sig.bpm      = n('bpm');
+  sig.beatInBar= n('beat_in_bar') || 1;
+  if(typeof d.beat==='number'){
+    if(lastBeatVal!==null && d.beat!==lastBeatVal){ sig.beatPulse=1; sig.beatCount++; }
+    lastBeatVal = d.beat;
+  }
+  lastLiveAt = performance.now();
+}
+function parseOscText(txt){
+  const d = {};
+  txt.split('\n').forEach(line=>{
+    const sp = line.indexOf(' '); if(sp<0) return;
+    const key = line.slice(0,sp).replace('/resona/','').replace(/\//g,'_');
+    const v = parseFloat(line.slice(sp+1));
+    d[key] = isNaN(v) ? line.slice(sp+1) : v;
+  });
+  return d;
+}
+let demoLastBeat = -1;
+function demoSignal(t){
+  const bpm = 118, ph = t*bpm/60, beat = Math.floor(ph), fr = ph-beat, bib = beat%4;
+  const section = Math.floor(beat/16)%2;
+  const kick  = Math.exp(-fr*7);
+  const snare = (bib===1||bib===3) ? Math.exp(-fr*9)*.9 : 0;
+  target.drums = clamp(.55*kick + .5*snare + .05*hash(Math.floor(t*30)),0,1);
+  target.bass  = clamp((bib===0||bib===2 ? .85 : .45)*Math.exp(-fr*3) + .1, 0, 1);
+  target.vocal = clamp(section ? .55+.3*Math.sin(t*1.7)+.1*Math.sin(t*5.1) : .12+.1*Math.sin(t*.9), 0, 1);
+  target.other = clamp(.3 + .35*noise2(t*.8, 3) + (section?.15:0), 0, 1);
+  target.low   = clamp(.6*kick + .4*target.bass, 0, 1);
+  target.hi    = clamp(.4*snare + .3*noise2(t*4,9) + (section?.2:0), 0, 1);
+  target.rms   = clamp((target.drums+target.bass+target.vocal+target.other)/3.2, 0, 1);
+  if(beat!==demoLastBeat){ demoLastBeat=beat; sig.beatPulse=1; sig.beatCount++; if(bib===0||bib===2) sig.onset=1; }
+  sig.bpm = bpm; sig.beatInBar = bib+1;
+}
+function isLive(){ return !forceDemo && performance.now()-lastLiveAt < 1500; }
+function updateSignals(t, dt){
+  if(!isLive()) demoSignal(t);
+  KEYS.forEach(k=>{
+    const tv = clamp(target[k]||0, 0, 1);
+    sig[k] += (tv-sig[k]) * Math.min(1, dt*(tv>sig[k] ? 30 : 9));
+    peakHold[k] = Math.max(sig[k], peakHold[k]-dt*.35);
+  });
+  sig.beatPulse = Math.max(0, sig.beatPulse - dt*4);
+  sig.onset     = Math.max(0, sig.onset - dt*5);
+}
+
+/* ───────── WebSocket ───────── */
+const qs = new URLSearchParams(location.search);
+const WS_URL = qs.get('ws') || 'ws://localhost:9980';
+let wsState = '대기';
+function wsConnect(){
+  let ws;
+  try{ ws = new WebSocket(WS_URL); }catch(e){ wsState='주소 오류'; return; }
+  wsState = '연결 중';
+  ws.onopen  = ()=>{ wsState='연결됨'; };
+  ws.onclose = ()=>{ wsState='끊김 — 재시도'; setTimeout(wsConnect, 3000); };
+  ws.onmessage = e=>{
+    if(typeof e.data!=='string') return;
+    let d; try{ d=JSON.parse(e.data); }catch(_){ d=parseOscText(e.data); }
+    if(d && typeof d==='object') ingest(d);
+  };
+}
+wsConnect();
+
+/* ───────── 영상 ───────── */
+const vid = document.getElementById('vid');
+let useVideo = false, vidReady = false;
+function loadVideo(src, name){
+  vidReady = false; vid.src = src; vid.play().catch(()=>{});
+  document.getElementById('vidName').textContent = name;
+}
+vid.addEventListener('loadeddata', ()=>{ vidReady = true; setSource(true); });
+vid.addEventListener('error', ()=>{ document.getElementById('vidName').textContent = '영상을 못 읽음 — mp4(H.264) 권장'; });
+function setSource(v){
+  useVideo = v && vidReady;
+  const b = document.getElementById('btnSrc');
+  b.textContent = useVideo ? '지금: 영상' : '지금: 그림';
+  b.classList.toggle('on', useVideo);
+}
+document.getElementById('btnLoad').onclick = ()=>document.getElementById('file').click();
+document.getElementById('btnSrc').onclick = ()=>setSource(!useVideo);
+document.getElementById('file').onchange = e=>{ const f=e.target.files[0]; if(f) loadVideo(URL.createObjectURL(f), f.name); };
+const dropEl = document.getElementById('drop');
+window.addEventListener('dragover', e=>{ e.preventDefault(); dropEl.classList.add('show'); });
+window.addEventListener('dragleave', e=>{ if(!e.relatedTarget) dropEl.classList.remove('show'); });
+window.addEventListener('drop', e=>{
+  e.preventDefault(); dropEl.classList.remove('show');
+  const f = [...e.dataTransfer.files].find(f=>f.type.startsWith('video/'));
+  if(f) loadVideo(URL.createObjectURL(f), f.name);
+});
+if(qs.get('video')) loadVideo(qs.get('video'), qs.get('video').split('/').pop());
+
+/* ───────── 큐 상태 ───────── */
+let cur = {song:0, v:'A'}, prev = null, fade = 1, autoCycle = false, autoAt = 0, tvBars = 0;
+function setCue(song, v){
+  song = clamp(song,0,SONGS.length-1);
+  if(song===cur.song && v===cur.v) return;
+  prev = {...cur}; cur = {song, v}; fade = 0; tvBars = .7;
+  renderCueUI();
+}
+
+/* ───────── LED 그림 (2D 캔버스 → 3D 텍스처) ─────────
+   전광판·TV·셔터를 정면 입면 그대로 한 장의 캔버스에 그리고,
+   3D의 각 LED 판은 그 캔버스에서 자기 자리만 떼어 쓴다 → B(한 장으로 이어짐)가 3D에서도 그대로 성립. */
+const slats = [];
+for(let y=SLOTS.shutter.y; y<SLOTS.shutter.y+SLOTS.shutter.h-2; y+=5.5)
+  slats.push({x:SLOTS.shutter.x, y, w:SLOTS.shutter.w, h:3.6});
+const PANELS = [
+  {key:'board',   rects:[SLOTS.board],   frame:SLOTS.board},
+  {key:'tv',      rects:[SLOTS.tv],      frame:SLOTS.tv},
+  {key:'shutter', rects:slats,           frame:SLOTS.shutter},
+];
+const UNION = bbox(PANELS.map(p=>p.frame));
+const LS = 2.4;                                         // LED 캔버스 해상도 배율
+const ledCanvas = document.createElement('canvas');
+ledCanvas.width = Math.round(UNION.w*LS); ledCanvas.height = Math.round(UNION.h*LS);
+const lx = ledCanvas.getContext('2d');
+
+const LOOKS = {
+  glitch:{spill:[232,54,74], paint:paintGlitch},
+  sky:{spill:[110,160,235], paint:paintSky},
+  scribble:{spill:[235,225,205], paint:paintScribble},
+};
+function paintVideo(c, f, seed, t, variant, driver){
+  c.fillStyle='#000'; c.fillRect(f.x,f.y,f.w,f.h);
+  if(!vidReady) return;
+  const vw = vid.videoWidth, vh = vid.videoHeight;
+  const s = Math.max(f.w/vw, f.h/vh), w = vw*s, h = vh*s;
+  c.drawImage(vid, f.x+(f.w-w)/2, f.y+(f.h-h)/2, w, h);
+  c.fillStyle = `rgba(0,0,0,${.35*(1-sig[driver])})`; c.fillRect(f.x,f.y,f.w,f.h);
+  if(sig.beatPulse>0){ c.fillStyle=`rgba(255,255,255,${sig.beatPulse*.12})`; c.fillRect(f.x,f.y,f.w,f.h); }
+}
+function paintGlitch(c, f, seed, t, variant){
+  c.fillStyle='#0d0d0f'; c.fillRect(f.x,f.y,f.w,f.h);
+  const bs = 9;
+  const step = Math.floor(t*(1.5+sig.drums*9)) + sig.beatCount*7;
+  const greys = ['#f2f2f2','#d9d9dc','#b8b8bd','#8d8d94','#5a5a61'];
+  for(let y=f.y, row=0; y<f.y+f.h; y+=bs, row++){
+    const shift = hash(row,seed,step) < sig.onset*.6 ? (hash(row,step,3)-.5)*50 : 0;
+    for(let x=f.x, col=0; x<f.x+f.w; x+=bs*1.6, col++){
+      const r = hash(col+seed*31, row, Math.floor(step/(1+col%3)));
+      if(r>.82) continue;
+      c.fillStyle = r < .07 + sig.drums*.18 ? '#e8364a' : greys[Math.floor(hash(col,row+seed)*greys.length)];
+      c.fillRect(x+shift, y, bs*1.6*(.5+hash(col,row,7)*.5)-1, bs-1);
+    }
+  }
+  const cx = variant==='B' ? CENTER.x : f.x+f.w/2, cy = variant==='B' ? CENTER.y : f.y+f.h/2;
+  const amp = variant==='B' ? sig.bass : sig.drums*.6;
+  c.save(); c.lineWidth = 5;
+  for(let k=0;k<16;k++){
+    const r = (k*15 + t*(25+70*amp)) % 240;
+    c.strokeStyle = k%2 ? `rgba(0,0,0,${.35+amp*.5})` : `rgba(255,255,255,${.15+amp*.6})`;
+    c.beginPath(); c.ellipse(cx, cy, r, r*.9, t*.3+k*.4, 0, Math.PI*2); c.stroke();
+  }
+  c.restore();
+}
+function paintSky(c, f, seed, t, variant){
+  if(variant==='A'){
+    c.fillStyle='#1f4fa3'; c.fillRect(f.x,f.y,f.w,f.h);
+    const tw=22, th=17;
+    const pal=[['#cfe3f7','#7fb0e6'],['#f4f1ea','#c9d6e4'],['#7ea36a','#cfe0b4'],['#e39a3b','#f6d29c'],['#16305f','#3c6cb4'],['#ffffff','#9cc3ee']];
+    const epoch = Math.floor(t*.4) + Math.floor(sig.beatCount/4);
+    for(let y=f.y, j=0; y<f.y+f.h; y+=th, j++){
+      for(let x=f.x, i=0; x<f.x+f.w; x+=tw, i++){
+        if(hash(i+seed*17, j, epoch) > .35 + sig.other*.5) continue;
+        const p = pal[Math.floor(hash(i,j,seed+epoch)*pal.length)];
+        const g = c.createLinearGradient(x,y,x+tw,y+th);
+        g.addColorStop(0,p[0]); g.addColorStop(1,p[1]);
+        c.globalAlpha = .55 + .45*(hash(i,j,sig.beatCount)<.15 ? sig.beatPulse : .6);
+        c.fillStyle = g; c.fillRect(x+1,y+1,tw-2,th-2);
+      }
+    }
+    c.globalAlpha = 1;
+  } else {
+    const g = c.createLinearGradient(0,f.y,0,f.y+f.h);
+    g.addColorStop(0,'#2d63c4'); g.addColorStop(.55,'#9fc3ee'); g.addColorStop(1,'#efe6dc');
+    c.fillStyle=g; c.fillRect(f.x,f.y,f.w,f.h);
+    for(let i=0;i<11;i++){
+      const x = f.x - 120 + ((i*173 + t*6*(1+i%3)) % (f.w+240));
+      const y = f.y + f.h*(.2 + .6*hash(i,4));
+      const rad = (45 + 50*hash(i,9)) * (1 + sig.vocal*.35);
+      const cg = c.createRadialGradient(x,y,0,x,y,rad);
+      cg.addColorStop(0,`rgba(255,255,255,${.55+sig.vocal*.35})`); cg.addColorStop(1,'rgba(255,255,255,0)');
+      c.fillStyle=cg; c.beginPath(); c.ellipse(x,y,rad*1.6,rad,0,0,Math.PI*2); c.fill();
+    }
+    c.strokeStyle=`rgba(255,255,255,${.25+sig.bass*.6})`; c.lineWidth=2+sig.bass*3;
+    c.beginPath(); c.arc(CENTER.x, CENTER.y, 58+sig.beatPulse*6, 0, Math.PI*2); c.stroke();
+  }
+}
+function paintScribble(c, f, seed, t, variant){
+  c.fillStyle='#ebe7df'; c.fillRect(f.x,f.y,f.w,f.h);
+  const epoch = Math.floor(sig.beatCount/2) + seed*13;
+  for(let i=0;i<7;i++){
+    c.fillStyle = ['#e2a35a','#d8c7a8','#f3efe6','#c9b08a'][i%4];
+    c.globalAlpha=.7;
+    c.fillRect(f.x+hash(i,epoch,1)*f.w*.9, f.y+hash(i,epoch,2)*f.h*.9, 8+hash(i,3)*f.w*.18, 6+hash(i,5)*f.h*.15);
+  }
+  c.globalAlpha=1; c.lineCap='round';
+  if(variant==='A'){
+    const n = 5 + Math.floor(sig.drums*7);
+    for(let i=0;i<n;i++){
+      const P = k => [f.x+hash(i,k,epoch)*f.w, f.y+hash(k,i,epoch+1)*f.h];
+      const [x0,y0]=P(1),[x1,y1]=P(2),[x2,y2]=P(3),[x3,y3]=P(4);
+      const r=hash(i,epoch,9);
+      c.strokeStyle = r<.1?'#d13b2e': r<.18?'#2c5aa0': r<.24?'#e39a3b':'#1e1e1e';
+      c.lineWidth = .8 + hash(i,epoch)*2.5 + sig.drums*2;
+      c.beginPath(); c.moveTo(x0,y0); c.bezierCurveTo(x1,y1,x2,y2,x3,y3); c.stroke();
+    }
+  } else {
+    for(let line=0; line<3; line++){
+      c.strokeStyle = line===0 ? '#1e1e1e' : line===1 ? 'rgba(209,59,46,.8)' : 'rgba(44,90,160,.7)';
+      c.lineWidth = (line===0 ? 2 : 1.2) + sig.vocal*3;
+      c.beginPath();
+      for(let s=0; s<=160; s++){
+        const x = f.x + f.w*s/160;
+        const y = f.y + f.h*(.5 + .42*(noise2(x*.012+line*3, t*.25)-.5)*2
+                                 + .12*(noise2(x*.05, t*.6+line)-.5)*2*sig.drums);
+        s ? c.lineTo(x,y) : c.moveTo(x,y);
+      }
+      c.stroke();
+    }
+  }
+}
+function colorBars(c, f){
+  const cols=['#e9e9e9','#e8e04a','#4ad7e0','#4ae05a','#e04ad2','#e04a4a','#4a5ae0'];
+  cols.forEach((col,i)=>{ c.fillStyle=col; c.fillRect(f.x+f.w*i/7, f.y, f.w/7+.5, f.h*.72); });
+  for(let i=0;i<40;i++){ c.fillStyle=hash(i,performance.now()|0)>.5?'#fff':'#222';
+    c.fillRect(f.x+hash(i,1)*f.w, f.y+f.h*.72+hash(i,2)*f.h*.28, 2, 1.5); }
+}
+function drawLEDCanvas(t){
+  const c = lx;
+  c.setTransform(1,0,0,1,0,0); c.fillStyle='#000'; c.fillRect(0,0,ledCanvas.width,ledCanvas.height);
+  c.setTransform(LS,0,0,LS,-UNION.x*LS,-UNION.y*LS);
+  const paintState = (state, alpha) => {
+    const song = SONGS[state.song], look = LOOKS[song.look], drv = song.driver[state.v];
+    c.globalAlpha = alpha;
+    PANELS.forEach((p,i)=>{
+      c.save(); c.beginPath(); p.rects.forEach(r=>c.rect(r.x,r.y,r.w,r.h)); c.clip();
+      const f = state.v==='B' ? UNION : p.frame, seed = state.v==='B' ? 0 : i+1;
+      if(p.key==='tv' && tvBars>0) colorBars(c, p.frame);
+      else if(useVideo) paintVideo(c, f, seed, t, state.v, drv);
+      else look.paint(c, f, seed, t, state.v);
+      c.restore();
+    });
+    c.globalAlpha = 1;
+  };
+  if(prev && fade<1) paintState(prev, 1);
+  paintState(cur, prev && fade<1 ? fade : 1);
+  const b = SLOTS.board;                                // 전광판 도트 결
+  c.save(); c.beginPath(); c.rect(b.x,b.y,b.w,b.h); c.clip();
+  c.strokeStyle='rgba(0,0,0,.3)'; c.lineWidth=.8; c.beginPath();
+  for(let y=b.y; y<b.y+b.h; y+=2.6){ c.moveTo(b.x,y); c.lineTo(b.x+b.w,y); }
+  for(let x=b.x; x<b.x+b.w; x+=2.6){ c.moveTo(x,b.y); c.lineTo(x,b.y+b.h); }
+  c.stroke(); c.restore();
+}
+
+/* ───────── 3D 기본 ───────── */
+const canvas = document.getElementById('gl'), mainEl = document.getElementById('main');
+const renderer = new THREE.WebGLRenderer({canvas, antialias:true});
+renderer.setPixelRatio(Math.min(2, window.devicePixelRatio||1));
+renderer.setClearColor(0x000000);
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x03060b, 0.00055);
+const camera = new THREE.PerspectiveCamera(35, 1, 5, 8000);
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true; controls.dampingFactor = .08;
+controls.minDistance = 120; controls.maxDistance = 3200;
+controls.maxPolarAngle = Math.PI*.495;
+controls.zoomSpeed = 1.1;
+
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(512,512), .8, .5, .26);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+
+scene.add(new THREE.AmbientLight(0x1d2a40, .9));
+const hemi = new THREE.HemisphereLight(0x33445e, 0x000000, .5); scene.add(hemi);
+
+/* 바닥 — 젖은 바닥 느낌 */
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(6000,6000),
+  new THREE.MeshStandardMaterial({color:0x06080b, roughness:.45, metalness:.35}));
+floor.rotation.x = -Math.PI/2; scene.add(floor);
+
+/* ───────── 회색 라인 세트 ───────── */
+const seg = [];
+const L = (x0,y0,z0,x1,y1,z1)=>{ seg.push(X(x0),Y(y0),z0, X(x1),Y(y1),z1); };
+function wbox(x,y,w,h,z,d,inner=0){                       // 와이어프레임 상자 (앞면 z, 깊이 d)
+  const zs=[z,z-d];
+  zs.forEach(zz=>{ L(x,y,zz,x+w,y,zz); L(x+w,y,zz,x+w,y+h,zz); L(x+w,y+h,zz,x,y+h,zz); L(x,y+h,zz,x,y,zz); });
+  [[x,y],[x+w,y],[x,y+h],[x+w,y+h]].forEach(([a,b])=>L(a,b,z,a,b,z-d));
+  for(let i=1;i<inner;i++){ const xx=x+w*i/inner; L(xx,y,z,xx,y+h,z); L(xx,y,z,xx,y,z-d); }
+}
+function tower(x,y0,y1,z,w){                               // 비계 기둥 (정사각 단면 + X 브레이스)
+  const pts=[[x,z],[x+w,z],[x+w,z-w],[x,z-w]];
+  pts.forEach(([a,zz])=>L(a,y0,zz,a,y1,zz));
+  const st=w*1.6;
+  for(let y=y0; y<y1-1; y+=st){
+    const y2=Math.min(y1,y+st);
+    for(let i=0;i<4;i++){ const [a1,z1]=pts[i],[a2,z2]=pts[(i+1)%4];
+      L(a1,y,z1,a2,y,z2); if(i<2){ L(a1,y,z1,a2,y2,z2); L(a2,y,z2,a1,y2,z1); } }
+  }
+}
+function truss(x0,x1,y,z,hh){                              // 가로 트러스 (사각 단면)
+  [[y,z],[y+hh,z],[y,z-hh],[y+hh,z-hh]].forEach(([yy,zz])=>L(x0,yy,zz,x1,yy,zz));
+  for(let x=x0,i=0; x<x1; x+=hh,i++){
+    const x2=Math.min(x1,x+hh);
+    L(x,y,z,x,y+hh,z); L(x,y,z-hh,x,y+hh,z-hh); L(x,y,z,x,y,z-hh); L(x,y+hh,z,x,y+hh,z-hh);
+    L(x,i%2?y:y+hh,z,x2,i%2?y+hh:y,z); L(x,i%2?y:y+hh,z-hh,x2,i%2?y+hh:y,z-hh);
+  }
+}
+// 왼쪽 늘어진 케이블
+for(let i=0;i<10;i++){ const x=88+i*15+hash(i,1)*6, z=-10-hash(i,2)*70; L(x,0,z,x,GROUND,z); if(i%3===0) L(x+2,0,z-3,x+2,GROUND,z-3); }
+// 전봇대 + 완목 + 변압기
+[[-40],[-48]].forEach(([z])=>{ L(294,0,z,297,GROUND,z); L(306,0,z,303,GROUND,z); });
+[34,38,100,104].forEach(y=>{ L(266,y,-44,346,y-4,-44); L(266,y,-36,266,y,-52); L(346,y-4,-36,346,y-4,-52); });
+L(278,58,-44,334,56,-44);
+wbox(306,138,16,34,-36,14); wbox(282,138,10,22,-38,8);
+for(let x=270;x<346;x+=14) wbox(x,26,3,6,-42,3);
+// 왼쪽 위 데크 + 중간 단
+wbox(150,282,172,8,4,74,8);
+for(let x=160;x<322;x+=18){ L(x,290,4,x,330,4); L(x,290,-70,x,330,-70); }
+wbox(150,330,165,58,4,74,6);
+// 셔터 상자 (앞면 = 셔터 LED)
+wbox(150,388,138,117,10,72,1);
+// 가운데 위 구조
+wbox(318,240,150,100,-30,92,5);
+wbox(470,272,150,128,-20,92,5);
+truss(318,470,224,-30,8); truss(470,620,256,-20,8);
+// 비계 기둥들
+tower(205,282,GROUND,22,14); tower(432,340,GROUND,12,12); tower(600,272,400,-8,12);
+tower(636,384,GROUND,22,12); tower(902,322,GROUND,22,14); tower(902,322,GROUND,-104,14);
+// 드럼 단
+wbox(343,455,120,6,16,72,4);
+tower(350,461,GROUND,14,12); tower(451,461,GROUND,14,12); tower(350,461,GROUND,-44,12); tower(451,461,GROUND,-44,12);
+// 계단 + 난간 (폭 = z 0 ~ −40)
+for(let i=0;i<12;i++){ const x=482+i*10, y=GROUND-i*9;
+  [0,-40].forEach(z=>{ L(x,y,z,x+10,y,z); L(x+10,y,z,x+10,y-9,z); }); L(x+10,y-9,0,x+10,y-9,-40); }
+[0,-40].forEach(z=>{ L(480,GROUND-30,z,602,GROUND-138,z); for(let i=0;i<7;i++){ const x=484+i*18; L(x,GROUND-34-i*16,z,x,GROUND-6-i*16,z); } });
+L(470,400,2,620,400,2); L(470,404,2,620,404,2); for(let x=470;x<=620;x+=10) L(x,400,2,x,430,2);
+// 오른쪽 건물 + 트러스 + 오렌지 방 문틀
+wbox(600,322,322,183,22,140,0);
+L(590,320,26,925,316,26); truss(640,880,368,22,9);
+wbox(675,390,148,113,22,132,0);
+for(let x=690;x<820;x+=12) L(x,392,8,x,500,8);              // 커튼선
+wbox(835,410,40,95,22,30); wbox(880,430,30,75,22,26);
+// 전광판 프레임 + 다리
+wbox(619,148,275,166,SLOTS.board.z+2,16);
+[640,872].forEach(x=>{ L(x,314,SLOTS.board.z-6,x,322,SLOTS.board.z-6); L(x,314,SLOTS.board.z-14,x+8,322,-118); });
+// TV 베젤
+wbox(615,349,51,34,SLOTS.tv.z+1,10);
+// 네온 프레임
+wbox(308,386,32,50,SLOTS.neon.z-1,4);
+// 무대 바닥 단
+wbox(70,GROUND-6,860,6,40,240,0);
+for(let x=70;x<=930;x+=40) L(x,GROUND,40,x,GROUND,-200);
+
+const setGeo = new THREE.BufferGeometry();
+setGeo.setAttribute('position', new THREE.Float32BufferAttribute(seg, 3));
+const setMat = new THREE.LineBasicMaterial({color:0xcfdcf2, transparent:true, opacity:.42});
+scene.add(new THREE.LineSegments(setGeo, setMat));
+
+/* 전선 — 매 프레임 흔들림 */
+const WIRES = [];
+for(let i=0;i<11;i++) WIRES.push({a:[296+(i%3)*6, 30+i*8, -44], b:[560+i*16, 228+(i%4)*14, -50-(i%3)*30], sag:60+i*6, ph:i});
+for(let i=0;i<4;i++) WIRES.push({a:[150, 80+i*12, -20-i*10], b:[296, 40+i*12, -44], sag:30, ph:i*2});
+const WSEG = 24;
+const wireGeo = new THREE.BufferGeometry();
+const wirePos = new Float32Array(WIRES.length*WSEG*6);
+wireGeo.setAttribute('position', new THREE.BufferAttribute(wirePos, 3));
+scene.add(new THREE.LineSegments(wireGeo, setMat));
+function updateWires(t){
+  let k=0;
+  WIRES.forEach(w=>{
+    const sag = w.sag + Math.sin(t*1.3+w.ph)*(1.5+sig.bass*5);
+    const P = s => [ w.a[0]+(w.b[0]-w.a[0])*s, w.a[1]+(w.b[1]-w.a[1])*s + 4*sag*.45*s*(1-s), w.a[2]+(w.b[2]-w.a[2])*s ];
+    for(let i=0;i<WSEG;i++){
+      const p0=P(i/WSEG), p1=P((i+1)/WSEG);
+      wirePos[k++]=X(p0[0]); wirePos[k++]=Y(p0[1]); wirePos[k++]=p0[2];
+      wirePos[k++]=X(p1[0]); wirePos[k++]=Y(p1[1]); wirePos[k++]=p1[2];
+    }
+  });
+  wireGeo.attributes.position.needsUpdate = true;
+}
+
+/* ───────── LED 판 ───────── */
+const ledTex = new THREE.CanvasTexture(ledCanvas);
+ledTex.colorSpace = THREE.SRGBColorSpace;
+ledTex.anisotropy = 4;
+function ledPlane(r){
+  const g = new THREE.PlaneGeometry(r.w, r.h);
+  const u0=(r.x-UNION.x)/UNION.w, u1=(r.x+r.w-UNION.x)/UNION.w;
+  const v1=1-(r.y-UNION.y)/UNION.h, v0=1-(r.y+r.h-UNION.y)/UNION.h;
+  g.setAttribute('uv', new THREE.Float32BufferAttribute([u0,v1, u1,v1, u0,v0, u1,v0], 2));
+  const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({map:ledTex, toneMapped:false}));
+  m.position.set(X(r.x+r.w/2), Y(r.y+r.h/2), r.z);
+  scene.add(m);
+  return m;
+}
+ledPlane(SLOTS.board); ledPlane(SLOTS.tv); ledPlane(SLOTS.shutter);
+const ledLight = new THREE.PointLight(0xffffff, 1.2, 700, 0);   // 전광판이 세트를 비춤
+ledLight.position.set(X(CENTER.x), Y(CENTER.y), SLOTS.board.z+60); scene.add(ledLight);
+
+/* 오렌지 방 */
+const roomMat = new THREE.MeshBasicMaterial({color:0xff8a3c, toneMapped:false});
+const room = new THREE.Mesh(new THREE.PlaneGeometry(SLOTS.room.w, SLOTS.room.h), roomMat);
+room.position.set(X(SLOTS.room.x+SLOTS.room.w/2), Y(SLOTS.room.y+SLOTS.room.h/2), SLOTS.room.z);
+scene.add(room);
+const roomLight = new THREE.PointLight(0xff8a3c, 1.5, 380, 0);
+roomLight.position.set(room.position.x, room.position.y+10, -40); scene.add(roomLight);
+
+/* 네온 「극아타」 */
+const neonCanvas = document.createElement('canvas'); neonCanvas.width=96; neonCanvas.height=160;
+{ const c = neonCanvas.getContext('2d');
+  c.strokeStyle='#ff6fb5'; c.lineWidth=4; c.shadowColor='#ff4fa0'; c.shadowBlur=12;
+  c.strokeRect(6,6,84,148);
+  c.fillStyle='#ffc2e0'; c.font='bold 38px "Apple SD Gothic Neo",sans-serif'; c.textAlign='center';
+  ['극','아','타'].forEach((ch,i)=>c.fillText(ch,48,50+i*44)); }
+const neonTex = new THREE.CanvasTexture(neonCanvas); neonTex.colorSpace = THREE.SRGBColorSpace;
+const neonMat = new THREE.MeshBasicMaterial({map:neonTex, transparent:true, toneMapped:false});
+const neon = new THREE.Mesh(new THREE.PlaneGeometry(SLOTS.neon.w, SLOTS.neon.h), neonMat);
+neon.position.set(X(SLOTS.neon.x+SLOTS.neon.w/2), Y(SLOTS.neon.y+SLOTS.neon.h/2), SLOTS.neon.z);
+scene.add(neon);
+const neonLight = new THREE.PointLight(0xff4fa0, 1, 160, 0);
+neonLight.position.set(neon.position.x, neon.position.y, SLOTS.neon.z+20); scene.add(neonLight);
+
+/* 백열전구 + 전구줄 */
+const bulbGeo = new THREE.SphereGeometry(2.4, 12, 8);
+const bulbs = BULBS.map(([x,y],i)=>{
+  const m = new THREE.Mesh(bulbGeo, new THREE.MeshBasicMaterial({color:0xffb46e, toneMapped:false}));
+  m.position.set(X(x), Y(y), -15-(i%3)*25); scene.add(m); return m;
+});
+{ const s=[]; const ord=[...bulbs].sort((a,b)=>a.position.x-b.position.x);
+  for(let i=0;i<ord.length-1;i++){ const a=ord[i].position, b=ord[i+1].position;
+    for(let k=0;k<8;k++){ const t0=k/8, t1=(k+1)/8, sag=t=>-6*4*t*(1-t);
+      s.push(a.x+(b.x-a.x)*t0, a.y+(b.y-a.y)*t0+sag(t0)+3, a.z+(b.z-a.z)*t0,
+             a.x+(b.x-a.x)*t1, a.y+(b.y-a.y)*t1+sag(t1)+3, a.z+(b.z-a.z)*t1); } }
+  const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.Float32BufferAttribute(s,3));
+  scene.add(new THREE.LineSegments(g, new THREE.LineBasicMaterial({color:0x8a7a66, transparent:true, opacity:.6}))); }
+const bulbLight = new THREE.PointLight(0xffa860, .9, 320, 0);
+bulbLight.position.set(X(440), Y(300), 10); scene.add(bulbLight);
+
+/* 밴드 */
+const darkMat = new THREE.MeshStandardMaterial({color:0x0b0d12, roughness:.65, metalness:.2});
+function person(h, guitar){
+  const g = new THREE.Group();
+  const add = (geo, x, y, rz=0) => { const m=new THREE.Mesh(geo, darkMat); m.position.set(x,y,0); m.rotation.z=rz; g.add(m); return m; };
+  add(new THREE.SphereGeometry(h*.085, 16, 12), 0, h*.9);
+  add(new THREE.CapsuleGeometry(h*.11, h*.22, 4, 10), 0, h*.62);
+  add(new THREE.CapsuleGeometry(h*.045, h*.36, 4, 8), -h*.055, h*.24);
+  add(new THREE.CapsuleGeometry(h*.045, h*.36, 4, 8),  h*.055, h*.24);
+  add(new THREE.CapsuleGeometry(h*.035, h*.28, 4, 8), -h*.15, h*.6, .25);
+  add(new THREE.CapsuleGeometry(h*.035, h*.28, 4, 8),  h*.15, h*.6, -.25);
+  if(guitar){ const gt = add(new THREE.BoxGeometry(h*.55, h*.11, h*.05), h*.04, h*.5, .45); gt.position.z = h*.12; }
+  scene.add(g); return g;
+}
+const band = [
+  {g:person(64,true),  x:336, y:0,  z:34},
+  {g:person(60,false), x:530, y:0,  z:-18},
+  {g:person(68,true),  x:760, y:0,  z:-60},
+];
+band.forEach(b=>b.g.position.set(X(b.x), b.y, b.z));
+const kit = new THREE.Group();
+{ const cyl=(r,h,x,y,z,rx=0)=>{ const m=new THREE.Mesh(new THREE.CylinderGeometry(r,r,h,20), darkMat); m.position.set(x,y,z); m.rotation.x=rx; kit.add(m); return m; };
+  cyl(13,12,0,13,0,Math.PI/2);                       // 킥
+  cyl(7,6,-14,26,4); cyl(7,6,14,27,4); cyl(9,12,26,12,-4);    // 탐·플로어탐
+  cyl(15,1,-26,40,-2); cyl(16,1,28,44,-4);           // 심벌
+  const seat = person(40,false); seat.position.set(0,8,-22); seat.scale.set(1,.85,1); scene.remove(seat); kit.add(seat); }
+kit.position.set(X(403), Y(455), -18); scene.add(kit);
+const cymbals = kit.children.filter(m=>m.geometry && m.geometry.parameters && m.geometry.parameters.height===1);
+
+/* 바닥 안개 */
+const fogTex = (()=>{ const c=document.createElement('canvas'); c.width=c.height=128; const x=c.getContext('2d');
+  const g=x.createRadialGradient(64,64,0,64,64,64); g.addColorStop(0,'rgba(120,160,210,.9)'); g.addColorStop(1,'rgba(120,160,210,0)');
+  x.fillStyle=g; x.fillRect(0,0,128,128); return new THREE.CanvasTexture(c); })();
+const fogs = [[-460,30,40,520],[470,30,40,520],[-300,10,-150,420],[350,10,-160,420]].map(([x,y,z,s])=>{
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({map:fogTex, transparent:true, opacity:.22, depthWrite:false, blending:THREE.AdditiveBlending}));
+  sp.position.set(x,y,z); sp.scale.set(s,s*.45,1); scene.add(sp); return sp; });
+
+/* ───────── 시점 ───────── */
+const VIEWS = {
+  front: {pos:[0,250,1080],    tgt:[0,230,-40]},
+  house: {pos:[-640,150,980],  tgt:[40,200,-50]},
+  side:  {pos:[1050,260,420],  tgt:[60,200,-60]},
+  top:   {pos:[120,1050,620],  tgt:[0,120,-60]},
+};
+let camAnim = null;
+function goView(name){
+  const v = VIEWS[name]; if(!v) return;
+  camAnim = {t:0, p0:camera.position.clone(), t0:controls.target.clone(),
+             p1:new THREE.Vector3(...v.pos), t1:new THREE.Vector3(...v.tgt)};
+  document.querySelectorAll('[data-view]').forEach(b=>b.classList.toggle('on', b.dataset.view===name));
+}
+camera.position.set(...VIEWS.house.pos); controls.target.set(...VIEWS.house.tgt);
+document.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>goView(b.dataset.view));
+controls.addEventListener('start', ()=>{ camAnim=null; document.querySelectorAll('[data-view]').forEach(b=>b.classList.remove('on')); });
+function setOrbit(on){ controls.autoRotate = on; controls.autoRotateSpeed = .5;
+  document.getElementById('btnOrbit').classList.toggle('on', on); }
+document.getElementById('btnOrbit').onclick = ()=>setOrbit(!controls.autoRotate);
+
+function resize(){
+  const r = mainEl.getBoundingClientRect();
+  if(!r.width || !r.height) return;
+  renderer.setSize(r.width, r.height, false);
+  composer.setSize(r.width, r.height);
+  camera.aspect = r.width/r.height; camera.updateProjectionMatrix();
+}
+new ResizeObserver(resize).observe(mainEl);
+
+/* ───────── 왼쪽 패널 ───────── */
+const BARS = [['ave','rms'],['Drums','drums'],['Bass','bass'],['Vocal','vocal'],['Other','other'],['Low','low'],['High','hi']];
+const barsEl = document.getElementById('bars');
+const barEls = BARS.map(([label,key])=>{
+  const row = document.createElement('div'); row.className='bar';
+  row.innerHTML = `<span>${label}</span><div class="track"><div class="fill"></div><div class="peak"></div></div><span class="num">0.00</span>`;
+  barsEl.appendChild(row);
+  return {row, key, fill:row.querySelector('.fill'), peak:row.querySelector('.peak'), num:row.querySelector('.num')};
+});
+const cueBtns = [];
+SONGS.forEach((s,si)=>['A','B'].forEach(v=>{
+  const b = document.createElement('button'); b.className='cue';
+  b.innerHTML = `<span>${si+1} ${s.name} ${v}</span><small>${s.driver[v]}</small>`;
+  b.onclick = ()=>setCue(si,v);
+  document.getElementById('cuelist').appendChild(b); cueBtns.push({b,si,v});
+}));
+function renderCueUI(){
+  const s = SONGS[cur.song];
+  document.getElementById('cueTitle').innerHTML = `<b>${cur.song+1}</b>${s.name} ${cur.v}`;
+  document.getElementById('drvName').textContent = s.driver[cur.v];
+  cueBtns.forEach(o=>o.b.classList.toggle('on', o.si===cur.song && o.v===cur.v));
+}
+renderCueUI();
+let midiName = '없음';
+function updatePanel(fps){
+  const drv = SONGS[cur.song].driver[cur.v];
+  document.getElementById('drvVal').textContent = sig[drv].toFixed(2);
+  barEls.forEach(o=>{
+    o.fill.style.width = (sig[o.key]*100).toFixed(1)+'%';
+    o.peak.style.left = (peakHold[o.key]*100).toFixed(1)+'%';
+    o.num.textContent = sig[o.key].toFixed(2);
+    o.row.classList.toggle('drv', o.key===drv);
+  });
+  const live = isLive();
+  document.getElementById('status').innerHTML =
+    `<span class="led ${live?'ok':'warn'}"></span><b>${live?'LIVE · resona':'DEMO'}</b>${forceDemo?' (고정)':''}<br>`+
+    `WS ${WS_URL} — ${wsState}<br>`+
+    `BPM ${sig.bpm? sig.bpm.toFixed(0):'—'} · 박 ${sig.beatInBar|0} · ${fps|0} fps<br>`+
+    `MIDI ${midiName}${autoCycle?' · 큐 자동':''}`;
+}
+
+/* ───────── 입력 ───────── */
+window.addEventListener('keydown', e=>{
+  const k = e.key.toLowerCase();
+  if(k>='1' && k<=String(SONGS.length)) setCue(+k-1, cur.v);
+  else if(k==='a') setCue(cur.song,'A');
+  else if(k==='b') setCue(cur.song,'B');
+  else if(k===' '){ e.preventDefault(); setCue(cur.song, cur.v==='A'?'B':'A'); }
+  else if(k==='0') goView('front');
+  else if(k==='9') goView('house');
+  else if(k==='8') goView('side');
+  else if(k==='7') goView('top');
+  else if(k==='o') setOrbit(!controls.autoRotate);
+  else if(k==='v') setSource(!useVideo);
+  else if(k==='t'){ autoCycle=!autoCycle; autoAt=sig.beatCount; }
+  else if(k==='d') forceDemo=!forceDemo;
+  else if(k==='h') document.getElementById('app').classList.toggle('nopanel');
+  else if(k==='f'){ document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen(); }
+});
+if(navigator.requestMIDIAccess){
+  navigator.requestMIDIAccess().then(acc=>{
+    const bind = ()=>{
+      const names=[];
+      acc.inputs.forEach(inp=>{
+        names.push(inp.name);
+        inp.onmidimessage = m=>{
+          const [st, note, vel] = m.data;
+          if((st&0xF0)===0x90 && vel>0){
+            const n6 = SONGS.length*2, idx = ((note-MIDI_BASE_NOTE)%n6+n6)%n6;
+            setCue(Math.floor(idx/2), idx%2 ? 'B':'A');
+          }
+        };
+      });
+      midiName = names.length ? names.join(', ') : '없음';
+    };
+    bind(); acc.onstatechange = bind;
+  }).catch(()=>{ midiName='권한 없음'; });
+}
+
+/* ───────── 루프 ───────── */
+let lastT = performance.now(), fpsAcc=0, fpsN=0, fps=60, panelAcc=0;
+const ease = x => x<.5 ? 2*x*x : 1-Math.pow(-2*x+2,2)/2;
+function frame(now){
+  requestAnimationFrame(frame);
+  const dt = Math.min(.1, (now-lastT)/1000); lastT = now;
+  const t = now/1000;
+  updateSignals(t, dt);
+  if(prev && fade<1){ fade = Math.min(1, fade + dt/.6); if(fade>=1) prev=null; }
+  tvBars = Math.max(0, tvBars - dt);
+  if(autoCycle && sig.beatCount-autoAt >= 32){
+    autoAt = sig.beatCount;
+    const i = (cur.song*2 + (cur.v==='B'?1:0) + 1) % (SONGS.length*2);
+    setCue(Math.floor(i/2), i%2?'B':'A');
+  }
+  const look = SONGS[cur.song].look, spill = LOOKS[look].spill;
+
+  drawLEDCanvas(t); ledTex.needsUpdate = true;
+  updateWires(t);
+  ledLight.color.setRGB(spill[0]/255, spill[1]/255, spill[2]/255);
+  ledLight.intensity = .6 + sig.rms*1.4 + sig.beatPulse*.6;
+
+  const [rr,rg,rb] = cur.v==='B' ? spill.map(v=>v/255) : [1,.54,.24];
+  const ra = .3 + sig.bass*.45;
+  roomMat.color.setRGB(rr*ra*.85, rg*ra*.75, rb*ra*.65);
+  roomLight.color.setRGB(rr,rg,rb); roomLight.intensity = .35 + sig.bass*1.1;
+
+  const flick = hash(Math.floor(t*12)) < .04 ? .2 : 1, na = (.45 + sig.vocal*.75)*flick;
+  neonMat.color.setScalar(na*1.3); neonLight.intensity = na*1.6;
+
+  bulbs.forEach((m,i)=>{
+    const hit = (i%4)===((sig.beatInBar|0)-1+4)%4 ? sig.beatPulse : 0;
+    const a = .45 + sig.rms*.4 + hit*1.2;
+    m.material.color.setRGB(1.6*a, 1.05*a, .5*a);
+  });
+  bulbLight.intensity = .5 + sig.rms*.8 + sig.beatPulse*.4;
+
+  const bob = sig.beatPulse*2;
+  band[0].g.position.y = bob; band[2].g.position.y = bob; band[1].g.position.y = bob*.5;
+  cymbals.forEach((c,i)=>c.rotation.z = (i?1:-1)*sig.drums*.25);
+  fogs.forEach((f,i)=>f.material.opacity = .16 + sig.rms*.14 + Math.sin(t*.4+i)*.03);
+
+  if(camAnim){
+    camAnim.t = Math.min(1, camAnim.t + dt/1.1);
+    const k = ease(camAnim.t);
+    camera.position.lerpVectors(camAnim.p0, camAnim.p1, k);
+    controls.target.lerpVectors(camAnim.t0, camAnim.t1, k);
+    if(camAnim.t>=1) camAnim = null;
+  }
+  controls.update();
+  composer.render();
+
+  fpsAcc += dt; fpsN++;
+  if(fpsAcc>.5){ fps = fpsN/fpsAcc; fpsAcc=0; fpsN=0; }
+  panelAcc += dt;
+  if(panelAcc > 1/30){ panelAcc=0; updatePanel(fps); }
+}
+resize();
+requestAnimationFrame(frame);
+</script>
+<script>
+  // three.js(CDN)를 못 불러오면 안내 — 인터넷이 없을 때
+  window.addEventListener('error', e=>{
+    if(String(e.message||'').match(/import|module|fetch/i)){
+      const el=document.getElementById('err'); el.style.display='block';
+      el.textContent='3D 라이브러리를 못 불러왔어요 (인터넷 연결 확인). 2D 버전 stage_sim.html 은 인터넷 없이 됩니다.';
+    }
+  });
+</script>
+</body>
+</html>
