@@ -71,6 +71,7 @@
   .outrow{display:grid;grid-template-columns:58px 1fr 10px;gap:6px;align-items:center;font-size:11px;color:var(--text)}
   .outrow select{width:100%;padding:4px;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:3px;font-size:11px}
   .outrow small{color:var(--dim);font-family:ui-monospace,Menlo,monospace;font-size:9px}
+  .btn:disabled{opacity:.4;cursor:default}
   .knobs{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:4px}
   .knob{display:flex;flex-direction:column;align-items:center;gap:3px;font-size:10px;color:var(--dim);user-select:none}
   .knob .dial{width:44px;height:44px;border-radius:50%;background:radial-gradient(circle at 50% 40%,#22304a,#0d1424);border:1px solid var(--line);position:relative;cursor:ns-resize;touch-action:none}
@@ -56204,6 +56205,16 @@ export { OutputShader };
         <button class="btn" id="btnCrowdShow">오토 (응원봉 연출)</button>
       </div>
     </div>
+    <div class="sub" style="margin-top:6px">음악 (레조나 없을 때)</div>
+    <div class="music">
+      <div class="row">
+        <button class="btn on" id="btnMusic">음악 불러오기</button>
+        <button class="btn" id="btnPlay" disabled>▶ 재생</button>
+      </div>
+      <div class="dim"><span>볼륨</span><input type="range" id="musicVol" min="0" max="100" value="80"><b id="musicVolV">80</b></div>
+      <div class="name" id="musicName">mp3·wav·m4a — 화면에 끌어놓아도 됨. 레조나가 연결되면 레조나 값이 우선</div>
+      <input type="file" id="musicFile" accept="audio/*" hidden>
+    </div>
     <div class="sub" style="margin-top:6px">LED 소스</div>
     <div class="vid">
       <div class="row">
@@ -56342,8 +56353,69 @@ function demoSignal(t){
   sig.bpm = bpm; sig.beatInBar = bib+1;
 }
 function isLive(){ return !forceDemo && performance.now()-lastLiveAt < 1500; }
+
+/* ───────── 음악 파일 → 무대 신호 (레조나 없을 때) ─────────
+   WebAudio 로 소리를 내면서 주파수를 읽어 대역·박자를 추정한다.
+   레조나처럼 스템을 나누진 못하므로 drums=저음·고음 순간 변화, bass=저음, vocal=중음, other=고중음 으로 근사 */
+const musicEl = new Audio(); musicEl.loop = true; musicEl.crossOrigin = 'anonymous';
+let musicCtx = null, musicAn = null, musicGain = null, musicBuf = null, musicTime = null, musicLabel = '';
+const MB = {prev:null, flux:[], lastBeat:0, intervals:[], agc:{}};
+function musicOn(){ return !!musicAn && !musicEl.paused && !forceDemo; }
+function ensureMusicCtx(){
+  if(musicCtx) return;
+  musicCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const srcNode = musicCtx.createMediaElementSource(musicEl);
+  musicAn = musicCtx.createAnalyser(); musicAn.fftSize = 2048; musicAn.smoothingTimeConstant = .6;
+  musicGain = musicCtx.createGain(); musicGain.gain.value = document.getElementById('musicVol').value/100;
+  srcNode.connect(musicAn); musicAn.connect(musicGain); musicGain.connect(musicCtx.destination);
+  musicBuf = new Uint8Array(musicAn.frequencyBinCount); musicTime = new Uint8Array(musicAn.fftSize);
+}
+function loadMusic(file){
+  ensureMusicCtx(); musicCtx.resume();
+  musicEl.src = URL.createObjectURL(file); musicLabel = file.name.replace(/\.[^.]+$/, '');
+  musicEl.play().catch(()=>{});
+  MB.prev = null; MB.flux = []; MB.intervals = []; MB.agc = {};
+  document.getElementById('musicName').textContent = '♪ ' + file.name;
+  const pb = document.getElementById('btnPlay'); pb.disabled = false; pb.textContent = '❚❚ 멈춤'; pb.classList.add('on');
+}
+function bandAvg(lo, hi){                                   // Hz 구간 평균 (0~1)
+  const hz = musicCtx.sampleRate/2/musicBuf.length; let s = 0, n = 0;
+  for(let i = Math.max(1, Math.floor(lo/hz)); i <= Math.min(musicBuf.length-1, Math.ceil(hi/hz)); i++){ s += musicBuf[i]; n++; }
+  return n ? s/n/255 : 0;
+}
+function agc(key, v, dt){                                   // 곡마다 음량이 달라도 0~1로 — 최댓값을 천천히 따라감
+  const m = MB.agc[key] = Math.max(v, (MB.agc[key] || .2) - dt*.04);
+  return clamp(v / Math.max(.08, m), 0, 1);
+}
+function musicSignal(t, dt){
+  musicAn.getByteFrequencyData(musicBuf); musicAn.getByteTimeDomainData(musicTime);
+  const sub = bandAvg(20,60), low = bandAvg(60,250), lmid = bandAvg(250,500), mid = bandAvg(500,2000), hi = bandAvg(2000,6000), air = bandAvg(6000,16000);
+  let rms = 0; for(let i=0;i<musicTime.length;i++){ const v=(musicTime[i]-128)/128; rms += v*v; } rms = Math.sqrt(rms/musicTime.length);
+  // 순간 변화(스펙트럴 플럭스) — 저음 = 킥, 고음 = 스네어·하이햇
+  const cur = [sub+low, hi+air];
+  const fluxLow = MB.prev ? Math.max(0, cur[0]-MB.prev[0]) : 0, fluxHi = MB.prev ? Math.max(0, cur[1]-MB.prev[1]) : 0;
+  MB.prev = cur;
+  target.bass  = agc('bass', low, dt);
+  target.vocal = agc('vocal', mid*.7 + lmid*.3, dt);
+  target.other = agc('other', hi*.6 + lmid*.4, dt);
+  target.drums = clamp(agc('fl', fluxLow, dt)*.7 + agc('fh', fluxHi, dt)*.5, 0, 1);
+  target.low   = agc('low', sub*.5 + low*.5, dt);
+  target.hi    = agc('hi', hi*.5 + air*.5, dt);
+  target.rms   = agc('rms', rms, dt);
+  // 박자 — 저음 플럭스가 최근 평균보다 크게 튀면 한 박 (최소 간격 0.28초)
+  MB.flux.push(fluxLow); if(MB.flux.length > 60) MB.flux.shift();
+  const mean = MB.flux.reduce((a,b)=>a+b,0)/MB.flux.length;
+  const sd = Math.sqrt(MB.flux.reduce((a,b)=>a+(b-mean)*(b-mean),0)/MB.flux.length);
+  const now = performance.now();
+  if(fluxLow > mean + sd*1.5 && fluxLow > .015 && now - MB.lastBeat > 280){
+    if(MB.lastBeat){ const iv = now - MB.lastBeat; if(iv < 1500){ MB.intervals.push(iv); if(MB.intervals.length > 16) MB.intervals.shift(); } }
+    MB.lastBeat = now; sig.beatPulse = 1; sig.beatCount++; sig.onset = 1;
+    sig.beatInBar = (sig.beatInBar % 4) + 1;
+  }
+  if(MB.intervals.length > 3){ const iv = [...MB.intervals].sort((a,b)=>a-b)[MB.intervals.length>>1]; let bpm = 60000/iv; while(bpm < 80) bpm *= 2; while(bpm > 180) bpm /= 2; sig.bpm = bpm; }
+}
 function updateSignals(t, dt){
-  if(!isLive()) demoSignal(t);
+  if(!isLive()){ if(musicOn()) musicSignal(t, dt); else demoSignal(t); }   // 우선순위: 레조나 > 음악 파일 > 데모
   KEYS.forEach(k=>{
     const tv = clamp(target[k]||0, 0, 1);
     sig[k] += (tv-sig[k]) * Math.min(1, dt*(tv>sig[k] ? 30 : 9));
@@ -56431,10 +56503,14 @@ window.addEventListener('drop', e=>{
   e.preventDefault(); dropEl.classList.remove('show');
   const f = [...e.dataTransfer.files].find(f=>f.type.startsWith('video/'));
   if(f) loadVideo(URL.createObjectURL(f), f.name);
+  const au = [...e.dataTransfer.files].find(f=>f.type.startsWith('audio/'));
+  if(au && typeof loadMusic==='function') loadMusic(au);
   const im = [...e.dataTransfer.files].find(f=>f.type.startsWith('image/'));   // 이미지 = 포스터 (화면 왼쪽 절반 → 셔터, 오른쪽 → 커튼)
   if(im && typeof setPosterImage==='function') setPosterImage(e.clientX < innerWidth/2 ? 'shutter' : 'curtain', im);
 });
 if(qs.get('video')) loadVideo(qs.get('video'), qs.get('video').split('/').pop());
+if(qs.get('vol')){ const v=document.getElementById('musicVol'); v.value=qs.get('vol'); document.getElementById('musicVolV').textContent=v.value; }   // ?vol=0~100
+if(qs.get('music')) fetch(qs.get('music')).then(r=>r.blob()).then(b=>loadMusic(new File([b], decodeURIComponent(qs.get('music').split('/').pop()), {type:b.type||'audio/mpeg'}))).catch(()=>{});   // ?music=파일 (서버로 열 때)
 
 /* ───────── 큐 상태 ───────── */
 let cur = {song:0, v:'A'}, prev = null, fade = 1, autoCycle = false, autoAt = 0;
@@ -57435,7 +57511,7 @@ function updatePanel(fps){
   });
   const live = isLive();
   document.getElementById('status').innerHTML =
-    `<span class="led ${live?'ok':'warn'}"></span><b>${live?'LIVE · resona':'DEMO'}</b>${forceDemo?' (고정)':''}<br>`+
+    `<span class="led ${live||musicOn()?'ok':'warn'}"></span><b>${live?'LIVE · resona':musicOn()?'MUSIC · '+musicLabel:'DEMO'}</b>${forceDemo?' (고정)':''}<br>`+
     `WS ${WS_URL} — ${wsState}<br>`+
     `BPM ${sig.bpm? sig.bpm.toFixed(0):'—'} · 박 ${sig.beatInBar|0} · ${fps|0} fps<br>`+
     `MIDI ${midiName}${autoCycle?' · 큐 자동':''}${crowdMode==='auto' ? '<br>응원봉 오토 · '+CROWD_SHOWS[Math.floor(sig.beatCount/32)%CROWD_SHOWS.length] : ''}`;
@@ -57656,6 +57732,17 @@ document.getElementById('btnSelfOut').onclick = ()=>{            // 예비 — �
   document.documentElement.requestFullscreen().catch(()=>{});
   document.getElementById('outWinNote').textContent = '패널 다시 보기: H 키 · 전체화면 끄기: Esc';
 };
+
+{ const fi = document.getElementById('musicFile');               // 음악 버튼
+  document.getElementById('btnMusic').onclick = ()=>fi.click();
+  fi.onchange = e=>{ const f = e.target.files[0]; if(f) loadMusic(f); fi.value=''; };
+  const pb = document.getElementById('btnPlay');
+  pb.onclick = ()=>{ if(!musicEl.src) return; ensureMusicCtx(); musicCtx.resume();
+    if(musicEl.paused){ musicEl.play().catch(()=>{}); pb.textContent='❚❚ 멈춤'; pb.classList.add('on'); }
+    else { musicEl.pause(); pb.textContent='▶ 재생'; pb.classList.remove('on'); } };
+  const vol = document.getElementById('musicVol');
+  vol.addEventListener('input', ()=>{ document.getElementById('musicVolV').textContent = vol.value; if(musicGain) musicGain.gain.value = vol.value/100; });
+}
 
 /* ───────── 입력 ───────── */
 window.addEventListener('keydown', e=>{
