@@ -5,7 +5,7 @@
 
 cd "$(dirname "$0")"
 PORT=8977
-ROOT="$(cd ../.. && pwd)"            # KAIST CT 2 — 04_참고자료 영상도 ?video= 로 열 수 있게
+ROOT="$(pwd)"                        # 이 폴더 기준 — 어디에 풀어도 동작 (영상은 화면에 끌어놓기)
 
 PIDS=()
 if ! lsof -nP -iTCP:9980 -sTCP:LISTEN >/dev/null 2>&1; then
@@ -17,7 +17,7 @@ fi
 trap 'kill ${PIDS[@]} 2>/dev/null' EXIT
 
 sleep 1
-URL="http://localhost:$PORT/05_resona_console/stage_sim/stage_3d.html"
+URL="http://localhost:$PORT/stage_3d.html"
 open -a "Google Chrome" "$URL" 2>/dev/null || open "$URL"
 
 echo ""

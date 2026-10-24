@@ -18,6 +18,15 @@
 resona.html ──(WS 연결 버튼)──▶ relay.py (ws://localhost:9980) ──▶ stage_sim.html
 ```
 
+## 고치는 법 (팀원용)
+
+1. `stage_3d.html`을 고친다 (무대 배치·간판·조명 등은 모두 이 파일 안)
+2. `시작.command`로 열어서 확인한다 (`stage_3d.html`은 직접 더블클릭하면 크롬이 막음)
+3. 한 파일 버전을 다시 만든다: `python3 tools/build_standalone.py`
+4. 두 파일(`stage_3d.html`, `RESONA_무대3D_더블클릭.html`)을 같이 커밋한다
+
+Claude Code에게 맡길 때: 「stage_3d.html에서 ○○ 고치고 한 파일 버전도 다시 만들어줘」
+
 ## 사이즈 한눈에 (레조나 출력 · 셔터 이미지)
 
 | 넣는 곳 | 비율 | 권장 크기 (px) | 비고 |
@@ -35,7 +44,7 @@ resona.html ──(WS 연결 버튼)──▶ relay.py (ws://localhost:9980) ─
 
 **이 파일 하나만 더블클릭** → 크롬에서 3D 무대가 열림. 3D 엔진·네온 폰트가 파일 안에 들어 있어서 **서버·파이썬·인터넷 다 필요 없음** (약 1.9MB, Slack에 이 파일만 올려도 됨)
 - 레조나 실시간 연결까지 하려면 아래 `시작.command`로 (중계 프로그램이 같이 켜짐)
-- 이 파일은 `stage_3d.html`에서 만든 복사본. 원본을 고치면 다시 만들어야 함
+- 이 파일은 `stage_3d.html`에서 만든 복사본. **원본을 고치면 다시 만들기**: stage_sim 폴더에서 `python3 tools/build_standalone.py`
 
 ## 가장 쉬운 방법 — `시작.command` 더블클릭
 

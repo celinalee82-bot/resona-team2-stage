@@ -10,6 +10,11 @@
    - 끄기: 그 터미널 탭에서 Ctrl+C 또는 창 닫기
    - 이미 9980·8977 포트가 쓰이고 있으면 그건 건너뜀
 
+## 고칠 때
+- 원본은 `stage_3d.html` 하나. 고친 뒤 **반드시** `python3 tools/build_standalone.py`로 `RESONA_무대3D_더블클릭.html`을 다시 만들 것 (안 하면 두 버전이 달라짐)
+- 확인은 `bash 시작.command`로 연 http://localhost:8977/stage_3d.html 에서
+- `RESONA_무대3D_더블클릭.html`을 손으로 고치지 말 것 (다음 빌드 때 덮어써짐)
+
 ## 하지 말 것
 - `stage_3d.html`을 file://로 직접 열지 말 것 — `lib/`의 모듈을 크롬이 막음. 서버(시작.command)로 열거나 한 파일 버전을 쓸 것
 - `lib/` 폴더를 지우거나 옮기지 말 것
